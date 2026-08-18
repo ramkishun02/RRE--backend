@@ -1,0 +1,37 @@
+<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RRE Market Connection Test</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f4f7fb;color:#172033;font:14px Arial}
+header{background:#102a50;color:white;padding:22px}.logo{font-size:32px;font-weight:900;color:#5ea1ff}
+main{max-width:900px;margin:auto;padding:20px}.card{background:white;border:1px solid #e1e7ef;border-radius:18px;padding:18px;margin-bottom:14px}
+.row{display:flex;gap:10px;align-items:center}.status{padding:9px 12px;border-radius:20px;font-weight:900;font-size:11px}
+.wait{background:#fff5df;color:#936400}.ok{background:#eaf8f2;color:#11865b}.bad{background:#fff0f1;color:#c83b45}
+input{flex:1;padding:13px;border:1px solid #ccd5e2;border-radius:10px;font-size:15px}button{border:0;border-radius:10px;padding:12px 16px;background:#1769e0;color:white;font-weight:900}
+.item{display:grid;grid-template-columns:1.4fr .8fr 100px;gap:10px;align-items:center;padding:14px 0;border-bottom:1px solid #edf0f4}
+.symbol{font-size:17px;font-weight:900}.small{display:block;color:#6d788a;font-size:11px;margin-top:3px}.price{font-size:17px;font-weight:900}
+.notice{background:#f3f7ff;border:1px solid #dce8ff;border-radius:10px;padding:12px;font-size:12px;line-height:1.5}
+@media(max-width:600px){.row{flex-wrap:wrap}.item{grid-template-columns:1fr 1fr}.item button{grid-column:1/-1}}
+</style></head><body>
+<header><div class="logo">RRE</div><h1>Real Market Connection Test</h1><div>Live NSE data verification</div></header>
+<main>
+<section class="card"><div class="row"><div style="flex:1"><strong>Backend / Kite Connection</strong><div id="user" class="small">Checking...</div></div>
+<span id="status" class="status wait">CHECKING</span></div>
+<div id="message" class="notice" style="margin-top:12px">Connecting to RRE backend...</div></section>
+<section class="card"><strong>Search real NSE stocks</strong><div class="row" style="margin-top:14px">
+<input id="search" placeholder="Try RELIANCE, TCS, INFY, HDFC..."><button onclick="searchStocks()">SEARCH</button></div>
+<div id="results" style="margin-top:12px"></div></section>
+<section class="card"><strong>Connection checklist</strong><div class="notice" style="margin-top:12px">
+1. Backend running<br>2. Kite API key loaded<br>3. Access token loaded<br>4. Kite profile reachable<br>5. NSE instruments loaded<br>6. Live NSE price returned
+</div></section>
+</main>
+<script>
+async function checkStatus(){try{let r=await fetch('/api/market/status'),d=await r.json();if(!d.connected)throw Error(d.message);
+status.textContent='CONNECTED';status.className='status ok';user.textContent='Kite user: '+(d.user||'connected');message.textContent=d.message;
+}catch(e){status.textContent='NOT CONNECTED';status.className='status bad';user.textContent='Backend/Kite unavailable';message.textContent=e.message||'Backend not connected';}}
+async function searchStocks(){let q=search.value.trim();if(!q){results.innerHTML='<div class="notice">Enter a symbol or company name.</div>';return}
+results.innerHTML='<div class="notice">Loading real market data...</div>';try{let r=await fetch('/api/market/search?q='+encodeURIComponent(q)),d=await r.json();if(!r.ok)throw Error(d.message);
+results.innerHTML=d.stocks.length?d.stocks.map(s=>'<div class="item"><div><div class="symbol">'+s.tradingsymbol+'</div><span class="small">'+s.name+'</span></div><div class="price">₹'+Number(s.last_price).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2})+'</div><button onclick="alert(\\''+s.tradingsymbol+'\\\\nCurrent price: ₹'+s.last_price+'\\')">QUOTE</button></div>').join(''):'<div class="notice">'+d.message+'</div>';
+}catch(e){results.innerHTML='<div class="notice" style="background:#fff0f1;color:#a6323b">'+e.message+'</div>';}}
+search.addEventListener('keydown',e=>e.key==='Enter'&&searchStocks());checkStatus();
+</script></body></html>
