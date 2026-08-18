@@ -1,34 +1,10 @@
-# RRE Node.js Backend
+# RRE Node.js Backend v2
 
-Cloud-ready Node.js/Express backend for RRE + Kite Connect.
+This version does not require public/index.html. The root page is served directly by server.js.
 
-## Render
-Build command:
-npm install
+Render Build Command: npm install
+Render Start Command: npm start
 
-Start command:
-npm start
+Environment variables: KITE_API_KEY, KITE_API_SECRET, KITE_ACCESS_TOKEN
 
-## Environment variables
-Set these in Render:
-KITE_API_KEY
-KITE_API_SECRET
-KITE_ACCESS_TOKEN
-
-Never commit real credentials to GitHub.
-
-## Endpoints
-GET /health
-GET /api/status
-GET /kite/login
-GET /kite/callback
-GET /api/kite/profile
-GET /api/market/search?q=RELIANCE
-GET /api/market/quote?symbol=RELIANCE
-POST /api/rre/decision
-
-## Kite redirect
-After Render deployment:
-https://YOUR-SERVICE.onrender.com/kite/callback
-
-The decision endpoint does NOT place orders. Order execution will be added only after authentication, market data, and user-confirmation flow are verified.
+Test: /health and /api/status
