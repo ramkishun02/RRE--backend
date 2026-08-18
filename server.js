@@ -1,150 +1,16 @@
-const express = require("express");
-const cors = require("cors");
-const path = require("path");
-
-let KiteConnect;
-try {
-  ({ KiteConnect } = require("kiteconnect"));
-} catch (e) {
-  console.error("kiteconnect package is not installed.");
-}
-
-const app = express();
-const PORT = process.env.PORT || 10000;
-
-app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-
-const env = name => (process.env[name] || "").trim();
-
-function getKite() {
-  if (!KiteConnect) throw new Error("kiteconnect package is not installed");
-  const apiKey = env("KITE_API_KEY");
-  if (!apiKey) throw new Error("KITE_API_KEY is missing");
-
-  const kite = new KiteConnect({ api_key: apiKey });
-  if (env("KITE_ACCESS_TOKEN")) kite.setAccessToken(env("KITE_ACCESS_TOKEN"));
-  return kite;
-}
-
-function esc(v) {
-  return String(v).replaceAll("&","&amp;").replaceAll("<","&lt;")
-    .replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#039;");
-}
-
-app.get("/health", (req,res) => res.json({
-  ok:true, service:"RRE Node.js Backend", time:new Date().toISOString()
-}));
-
-app.get("/api/status", (req,res) => res.json({
-  backend:true,
-  kitePackage:!!KiteConnect,
-  apiKeyConfigured:!!env("KITE_API_KEY"),
-  accessTokenConfigured:!!env("KITE_ACCESS_TOKEN")
-}));
-
-app.get("/kite/login", (req,res) => {
-  try { res.redirect(getKite().getLoginURL()); }
-  catch(e) { res.status(500).json({ok:false,message:e.message}); }
-});
-
-app.get("/kite/callback", async (req,res) => {
-  const requestToken = String(req.query.request_token || "").trim();
-  if (!requestToken) return res.status(400).send("<h2>RRE Kite Callback</h2><p>No request_token received.</p>");
-
-  try {
-    const apiKey = env("KITE_API_KEY");
-    const apiSecret = env("KITE_API_SECRET");
-    if (!apiKey || !apiSecret) throw new Error("KITE_API_KEY or KITE_API_SECRET is missing");
-
-    const kite = new KiteConnect({api_key:apiKey});
-    const session = await kite.generateSession(requestToken,{api_secret:apiSecret});
-
-    res.send(`<h2>RRE Kite Authentication Successful</h2>
-      <p>User: ${esc(session.user_name || session.user_id || "Connected")}</p>
-      <p>Access token received by backend. It is not displayed here.</p>
-      <p>You can close this page and return to RRE.</p>`);
-  } catch(e) {
-    res.status(500).send(`<h2>RRE Kite Authentication Failed</h2><p>${esc(e.message)}</p>`);
-  }
-});
-
-app.get("/api/kite/profile", async (req,res) => {
-  try {
-    if (!env("KITE_ACCESS_TOKEN")) throw new Error("KITE_ACCESS_TOKEN is not configured");
-    const p = await getKite().getProfile();
-    res.json({ok:true,connected:true,user_id:p.user_id,user_name:p.user_name,email:p.email});
-  } catch(e) {
-    res.status(401).json({ok:false,connected:false,message:e.message});
-  }
-});
-
-app.get("/api/market/search", async (req,res) => {
-  const q = String(req.query.q || "").trim().toUpperCase();
-  if (!q) return res.json({ok:true,stocks:[],message:"Enter a symbol or company name."});
-
-  try {
-    if (!env("KITE_ACCESS_TOKEN")) throw new Error("KITE_ACCESS_TOKEN is not configured");
-    const kite = getKite();
-    const instruments = await kite.getInstruments("NSE");
-
-    const matches = instruments.filter(x =>
-      String(x.tradingsymbol || "").toUpperCase().includes(q) ||
-      String(x.name || "").toUpperCase().includes(q)
-    ).slice(0,25);
-
-    let quotes = {};
-    try {
-      if (matches.length) quotes = await kite.getLTP(matches.map(x => `NSE:${x.tradingsymbol}`));
-    } catch(e) {
-      console.warn("LTP unavailable:",e.message);
-    }
-
-    const stocks = matches.map(x => {
-      const quote = quotes[`NSE:${x.tradingsymbol}`] || {};
-      return {
-        exchange:"NSE",
-        tradingsymbol:x.tradingsymbol,
-        name:x.name || x.tradingsymbol,
-        instrument_token:String(x.instrument_token),
-        last_price:quote.last_price || null
-      };
-    });
-
-    res.json({ok:true,stocks,message:`${stocks.length} NSE result(s) found.`});
-  } catch(e) {
-    res.status(500).json({ok:false,stocks:[],message:e.message});
-  }
-});
-
-app.get("/api/market/quote", async (req,res) => {
-  const symbol = String(req.query.symbol || "").trim().toUpperCase();
-  if (!symbol) return res.status(400).json({ok:false,message:"Symbol is required."});
-
-  try {
-    if (!env("KITE_ACCESS_TOKEN")) throw new Error("KITE_ACCESS_TOKEN is not configured");
-    const key = `NSE:${symbol}`;
-    const data = await getKite().getLTP([key]);
-    const quote = data[key];
-    if (!quote) return res.status(404).json({ok:false,message:"No quote returned."});
-    res.json({ok:true,exchange:"NSE",tradingsymbol:symbol,last_price:quote.last_price,instrument_token:quote.instrument_token});
-  } catch(e) {
-    res.status(500).json({ok:false,message:e.message});
-  }
-});
-
-app.post("/api/rre/decision", (req,res) => {
-  const symbol = String(req.body?.symbol || "").trim().toUpperCase();
-  if (!symbol) return res.status(400).json({ok:false,message:"Symbol is required."});
-  res.json({
-    ok:true,stage:"DECISION_PENDING",symbol,aiAssist:true,
-    userConfirmationRequired:true,userConfirmed:!!req.body?.userConfirmed,
-    message:"No order was placed. User confirmation is required."
-  });
-});
-
-app.use(express.static(path.join(__dirname,"public")));
-app.get("/",(req,res)=>res.sendFile(path.join(__dirname,"public","index.html")));
-
-app.listen(PORT,"0.0.0.0",()=>console.log(`RRE backend running on port ${PORT}`));
+const express=require('express'); const cors=require('cors');
+let KiteConnect; try{({KiteConnect}=require('kiteconnect'))}catch(e){console.error('kiteconnect package is not installed:',e.message)}
+const app=express(), PORT=process.env.PORT||10000; app.use(cors()); app.use(express.json()); app.use(express.urlencoded({extended:true}));
+const env=n=>(process.env[n]||'').trim();
+function getKite(){if(!KiteConnect)throw Error('kiteconnect package is not installed');const k=new KiteConnect({api_key:env('KITE_API_KEY')});if(!env('KITE_API_KEY'))throw Error('KITE_API_KEY is missing');if(env('KITE_ACCESS_TOKEN'))k.setAccessToken(env('KITE_ACCESS_TOKEN'));return k}
+const esc=v=>String(v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#039;');
+app.get('/',(q,r)=>r.type('html').send('<h1>RRE Backend</h1><p>Status: <b>RUNNING</b></p><p><a href="/health">Health check</a></p><p><a href="/api/status">Configuration status</a></p><p><a href="/kite/login">Connect Kite</a></p>'));
+app.get('/health',(q,r)=>r.json({ok:true,service:'RRE Node.js Backend',time:new Date().toISOString()}));
+app.get('/api/status',(q,r)=>r.json({backend:true,kitePackage:!!KiteConnect,apiKeyConfigured:!!env('KITE_API_KEY'),accessTokenConfigured:!!env('KITE_ACCESS_TOKEN')}));
+app.get('/kite/login',(q,r)=>{try{r.redirect(getKite().getLoginURL())}catch(e){r.status(500).json({ok:false,message:e.message})}});
+app.get('/kite/callback',async(q,r)=>{const t=String(q.query.request_token||'').trim();if(!t)return r.status(400).send('<h2>RRE Kite Callback</h2><p>No request_token received.</p>');try{const k=new KiteConnect({api_key:env('KITE_API_KEY')});const s=await k.generateSession(t,{api_secret:env('KITE_API_SECRET')});r.send(`<h2>RRE Kite Authentication Successful</h2><p>User: ${esc(s.user_name||s.user_id||'Connected')}</p><p>Access token received by backend. It is not displayed.</p>`)}catch(e){r.status(500).send(`<h2>RRE Kite Authentication Failed</h2><p>${esc(e.message)}</p>`)}});
+app.get('/api/kite/profile',async(q,r)=>{try{if(!env('KITE_ACCESS_TOKEN'))throw Error('KITE_ACCESS_TOKEN is not configured');const p=await getKite().getProfile();r.json({ok:true,connected:true,user_id:p.user_id,user_name:p.user_name,email:p.email})}catch(e){r.status(401).json({ok:false,connected:false,message:e.message})}});
+app.get('/api/market/search',async(q,r)=>{const x=String(q.query.q||'').trim().toUpperCase();if(!x)return r.json({ok:true,stocks:[]});try{if(!env('KITE_ACCESS_TOKEN'))throw Error('KITE_ACCESS_TOKEN is not configured');const k=getKite(),ins=await k.getInstruments('NSE'),m=ins.filter(a=>String(a.tradingsymbol||'').toUpperCase().includes(x)||String(a.name||'').toUpperCase().includes(x)).slice(0,25);let z={};try{z=await k.getLTP(m.map(a=>`NSE:${a.tradingsymbol}`))}catch(e){}r.json({ok:true,stocks:m.map(a=>({exchange:'NSE',tradingsymbol:a.tradingsymbol,name:a.name||a.tradingsymbol,instrument_token:String(a.instrument_token),last_price:z[`NSE:${a.tradingsymbol}`]?.last_price||null}))})}catch(e){r.status(500).json({ok:false,stocks:[],message:e.message})}});
+app.get('/api/market/quote',async(q,r)=>{const s=String(q.query.symbol||'').trim().toUpperCase();if(!s)return r.status(400).json({ok:false,message:'Symbol is required.'});try{if(!env('KITE_ACCESS_TOKEN'))throw Error('KITE_ACCESS_TOKEN is not configured');const d=await getKite().getLTP([`NSE:${s}`]),v=d[`NSE:${s}`];if(!v)return r.status(404).json({ok:false,message:'No quote returned.'});r.json({ok:true,exchange:'NSE',tradingsymbol:s,last_price:v.last_price,instrument_token:v.instrument_token})}catch(e){r.status(500).json({ok:false,message:e.message})}});
+app.post('/api/rre/decision',(q,r)=>{const s=String(q.body?.symbol||'').trim().toUpperCase();if(!s)return r.status(400).json({ok:false,message:'Symbol is required.'});r.json({ok:true,stage:'DECISION_PENDING',symbol:s,aiAssist:true,userConfirmationRequired:true,userConfirmed:!!q.body?.userConfirmed,message:'No order was placed. User confirmation is required.'})});
+app.use((q,r)=>r.status(404).json({ok:false,error:'Not Found',path:q.path})); app.listen(PORT,'0.0.0.0',()=>console.log(`RRE backend running on port ${PORT}`));
