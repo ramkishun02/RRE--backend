@@ -1,1 +1,14 @@
-{"name":"rre-backend","version":"1.0.1","private":true,"main":"server.js","scripts":{"start":"node server.js"},"engines":{"node":">=18"},"dependencies":{"cors":"^2.8.5","express":"^5.1.0","kiteconnect":"^5.2.1"}}
+{
+  "name": "rre-backend",
+  "version": "1.0.2",
+  "private": true,
+  "main": "server.js",
+  "scripts": {"start": "node server.js"},
+  "engines": {"node": ">=18"},
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "kiteconnect": "^5.2.1",
+    "pg": "^8.16.3"
+  }
+}
