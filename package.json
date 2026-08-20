@@ -1,14 +1,12 @@
 {
-  "name": "rre-backend",
-  "version": "1.0.2",
-  "private": true,
+  "name": "rre-backend-v3",
+  "version": "3.0.0",
   "main": "server.js",
-  "scripts": {"start": "node server.js"},
-  "engines": {"node": ">=18"},
+  "scripts": {
+    "start": "node server.js"
+  },
   "dependencies": {
-    "cors": "^2.8.5",
     "express": "^5.1.0",
-    "kiteconnect": "^5.2.1",
     "pg": "^8.16.3"
   }
 }
