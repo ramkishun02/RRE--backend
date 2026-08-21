@@ -1,12 +1,17 @@
 {
   "name": "rre-backend-v3",
   "version": "3.0.0",
+  "description": "RRE Backend v3 with Kite Connect and PostgreSQL",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
     "express": "^5.1.0",
-    "pg": "^8.16.3"
+    "pg": "^8.16.3",
+    "kiteconnect": "^5.3.0"
   }
 }

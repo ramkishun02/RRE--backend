@@ -1,6 +1,6 @@
 const express = require("express");
 const { Pool } = require("pg");
-const crypto = require("crypto");
+const { KiteConnect } = require("kiteconnect");
 
 const app = express();
 
@@ -13,637 +13,759 @@ const KITE_API_KEY = process.env.KITE_API_KEY;
 const KITE_API_SECRET = process.env.KITE_API_SECRET;
 const DATABASE_URL = process.env.DATABASE_URL;
 
-let pool = null;
-let databaseReady = false;
+// --------------------------------------------------
+// PostgreSQL
+// --------------------------------------------------
 
-/* =========================================================
-   DATABASE
-========================================================= */
+const pool = DATABASE_URL
+  ? new Pool({
+      connectionString: DATABASE_URL,
+      ssl: {
+        rejectUnauthorized: false
+      }
+    })
+  : null;
 
-async function initializeDatabase() {
-    if (!DATABASE_URL) {
-        console.log("DATABASE_URL missing");
-        return;
-    }
+// --------------------------------------------------
+// Kite client
+// --------------------------------------------------
 
-    pool = new Pool({
-        connectionString: DATABASE_URL,
-        ssl: {
-            rejectUnauthorized: false
-        }
-    });
+const kite = KITE_API_KEY
+  ? new KiteConnect({
+      api_key: KITE_API_KEY
+    })
+  : null;
 
-    try {
-        await pool.query(`
-            CREATE TABLE IF NOT EXISTS kite_tokens (
-                id SERIAL PRIMARY KEY,
-                access_token TEXT NOT NULL,
-                user_id TEXT,
-                login_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        `);
+// --------------------------------------------------
+// Database initialization
+// --------------------------------------------------
 
-        databaseReady = true;
-        console.log("RRE database initialized.");
-    } catch (error) {
-        databaseReady = false;
-        console.error("Database initialization error:", error.message);
-    }
+async function initDatabase() {
+  if (!pool) {
+    console.log("DATABASE_URL is missing");
+    return false;
+  }
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS kite_sessions (
+      id SERIAL PRIMARY KEY,
+      access_token TEXT NOT NULL,
+      public_token TEXT,
+      user_id TEXT,
+      user_name TEXT,
+      email TEXT,
+      login_time TIMESTAMP,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  console.log("RRE database initialized.");
+  return true;
 }
 
-/* =========================================================
-   KITE LOGIN
-========================================================= */
+// --------------------------------------------------
+// Get latest access token
+// --------------------------------------------------
 
-app.get("/kite/login", (req, res) => {
+async function getStoredAccessToken() {
+  if (!pool) return null;
 
-    if (!KITE_API_KEY) {
-        return res.status(500).send(`
-            <h2>Kite API key missing</h2>
-        `);
+  const result = await pool.query(`
+    SELECT *
+    FROM kite_sessions
+    ORDER BY id DESC
+    LIMIT 1
+  `);
+
+  if (result.rows.length === 0) {
+    return null;
+  }
+
+  return result.rows[0];
+}
+
+// --------------------------------------------------
+// Home page
+// --------------------------------------------------
+
+app.get("/", async (req, res) => {
+  let databaseConfigured = !!pool;
+  let databaseReady = false;
+  let accessTokenConfigured = false;
+
+  if (pool) {
+    try {
+      await pool.query("SELECT 1");
+      databaseReady = true;
+
+      const session = await getStoredAccessToken();
+      accessTokenConfigured = !!session?.access_token;
+    } catch (err) {
+      console.error("Database check failed:", err.message);
     }
+  }
 
-    const loginUrl =
-        `https://kite.zerodha.com/connect/login?v=3&api_key=${encodeURIComponent(KITE_API_KEY)}`;
+  const kiteConfigured =
+    !!KITE_API_KEY && !!KITE_API_SECRET && !!kite;
 
-    res.redirect(loginUrl);
+  res.send(`
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RRE Backend v3</title>
+
+<style>
+body {
+  font-family: Arial, sans-serif;
+  background: #f4f7fb;
+  margin: 0;
+  padding: 30px;
+}
+
+.card {
+  max-width: 700px;
+  margin: auto;
+  background: white;
+  padding: 30px;
+  border-radius: 18px;
+  box-shadow: 0 8px 30px rgba(0,0,0,.08);
+}
+
+h1 {
+  margin-top: 0;
+}
+
+.status {
+  margin: 15px 0;
+  font-size: 18px;
+}
+
+.ok {
+  color: green;
+  font-weight: bold;
+}
+
+.bad {
+  color: red;
+  font-weight: bold;
+}
+
+button, a.button {
+  display: inline-block;
+  padding: 13px 20px;
+  margin: 8px 5px 0 0;
+  background: #1976d2;
+  color: white;
+  border: none;
+  border-radius: 9px;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+button:hover, a.button:hover {
+  background: #125aa0;
+}
+</style>
+</head>
+
+<body>
+
+<div class="card">
+
+<h1>RRE Backend v3</h1>
+
+<div class="status">
+Backend:
+<span class="ok">RUNNING</span>
+</div>
+
+<div class="status">
+Database:
+<span class="${databaseReady ? "ok" : "bad"}">
+${databaseReady ? "CONFIGURED" : "NOT READY"}
+</span>
+</div>
+
+<div class="status">
+Kite API:
+<span class="${kiteConfigured ? "ok" : "bad"}">
+${kiteConfigured ? "CONFIGURED" : "NOT CONFIGURED"}
+</span>
+</div>
+
+<div class="status">
+Access Token:
+<span class="${accessTokenConfigured ? "ok" : "bad"}">
+${accessTokenConfigured ? "CONFIGURED" : "NOT CONFIGURED"}
+</span>
+</div>
+
+<hr>
+
+<a class="button" href="/health">Health Check</a>
+
+<a class="button" href="/status">Configuration Status</a>
+
+<a class="button" href="/connect/kite">Connect Kite</a>
+
+</div>
+
+</body>
+</html>
+  `);
 });
 
-/* =========================================================
-   KITE CALLBACK
-========================================================= */
+// --------------------------------------------------
+// Health
+// --------------------------------------------------
+
+app.get("/health", async (req, res) => {
+  let databaseReady = false;
+  let accessTokenConfigured = false;
+
+  if (pool) {
+    try {
+      await pool.query("SELECT 1");
+      databaseReady = true;
+
+      const session = await getStoredAccessToken();
+      accessTokenConfigured = !!session?.access_token;
+    } catch (err) {
+      console.error("Health database error:", err.message);
+    }
+  }
+
+  res.json({
+    backend: true,
+    databaseConfigured: !!pool,
+    databaseReady,
+    kitePackage: !!KiteConnect,
+    apiKeyConfigured: !!KITE_API_KEY,
+    apiSecretConfigured: !!KITE_API_SECRET,
+    accessTokenConfigured
+  });
+});
+
+// --------------------------------------------------
+// Status page
+// --------------------------------------------------
+
+app.get("/status", async (req, res) => {
+  let databaseReady = false;
+  let session = null;
+
+  if (pool) {
+    try {
+      await pool.query("SELECT 1");
+      databaseReady = true;
+      session = await getStoredAccessToken();
+    } catch (err) {
+      console.error("Status database error:", err.message);
+    }
+  }
+
+  res.json({
+    backend: "RUNNING",
+
+    database: {
+      configured: !!pool,
+      ready: databaseReady
+    },
+
+    kite: {
+      package: !!KiteConnect,
+      apiKeyConfigured: !!KITE_API_KEY,
+      apiSecretConfigured: !!KITE_API_SECRET
+    },
+
+    accessToken: {
+      configured: !!session?.access_token,
+      userId: session?.user_id || null,
+      userName: session?.user_name || null,
+      loginTime: session?.login_time || null
+    }
+  });
+});
+
+// --------------------------------------------------
+// Start Kite authorization
+// --------------------------------------------------
+
+app.get("/connect/kite", (req, res) => {
+
+  if (!KITE_API_KEY) {
+    return res.status(500).send(`
+      <h2>Kite API key missing</h2>
+      <p>Set KITE_API_KEY in Render Environment Variables.</p>
+    `);
+  }
+
+  if (!KITE_API_SECRET) {
+    return res.status(500).send(`
+      <h2>Kite API secret missing</h2>
+      <p>Set KITE_API_SECRET in Render Environment Variables.</p>
+    `);
+  }
+
+  if (!kite) {
+    return res.status(500).send(`
+      <h2>Kite client not initialized</h2>
+    `);
+  }
+
+  const loginUrl = kite.getLoginURL();
+
+  console.log("Kite authorization started.");
+
+  res.redirect(loginUrl);
+});
+
+// --------------------------------------------------
+// Kite callback
+// --------------------------------------------------
 
 app.get("/kite/callback", async (req, res) => {
 
-    console.log("====================================");
-    console.log("KITE CALLBACK RECEIVED");
-    console.log("====================================");
+  console.log("====================================");
+  console.log("KITE CALLBACK RECEIVED");
+  console.log("====================================");
 
-    const requestToken = req.query.request_token;
-    const status = req.query.status;
+  try {
+
+    const {
+      request_token,
+      status,
+      action
+    } = req.query;
 
     console.log("Kite status:", status);
+    console.log("Kite action:", action);
     console.log(
-        "Request token received:",
-        requestToken ? "YES" : "NO"
+      "Request token received:",
+      request_token ? "YES" : "NO"
     );
 
-    if (!requestToken) {
-        return res.status(400).send(`
-            <html>
-            <body style="font-family:Arial;padding:30px">
-                <h2 style="color:red">Kite Login Failed</h2>
-                <p>No request_token was received.</p>
-                <a href="/">Return to RRE</a>
-            </body>
-            </html>
-        `);
+    if (!request_token) {
+      return res.status(400).send(`
+<!DOCTYPE html>
+<html>
+<body>
+<h2>Kite Login Failed</h2>
+<p>No request_token was received.</p>
+<p>Please start again from Connect Kite.</p>
+</body>
+</html>
+      `);
     }
 
-    if (!KITE_API_KEY || !KITE_API_SECRET) {
-        return res.status(500).send(`
-            <html>
-            <body style="font-family:Arial;padding:30px">
-                <h2 style="color:red">Kite configuration missing</h2>
-                <p>KITE_API_KEY or KITE_API_SECRET is missing.</p>
-            </body>
-            </html>
-        `);
+    if (!kite) {
+      throw new Error("Kite client is not initialized");
     }
 
-    try {
-
-        console.log("Generating Kite checksum...");
-
-        /*
-         Kite checksum:
-         SHA256(api_key + request_token + api_secret)
-        */
-
-        const checksum = crypto
-            .createHash("sha256")
-            .update(
-                KITE_API_KEY +
-                requestToken +
-                KITE_API_SECRET
-            )
-            .digest("hex");
-
-        console.log("Checksum generated.");
-
-        console.log("Exchanging request token for access token...");
-
-        const response = await fetch(
-            "https://api.kite.trade/session/token",
-            {
-                method: "POST",
-
-                headers: {
-                    "X-Kite-Version": "3",
-                    "Content-Type":
-                        "application/x-www-form-urlencoded"
-                },
-
-                body: new URLSearchParams({
-                    api_key: KITE_API_KEY,
-                    request_token: requestToken,
-                    checksum: checksum
-                }).toString()
-            }
-        );
-
-        const data = await response.json();
-
-        console.log(
-            "Kite token response status:",
-            response.status
-        );
-
-        if (!response.ok || data.status !== "success") {
-
-            console.error(
-                "Kite token exchange failed:",
-                JSON.stringify(data)
-            );
-
-            return res.status(401).send(`
-                <html>
-                <body style="font-family:Arial;padding:30px">
-                    <h2 style="color:red">
-                        Kite Authentication Failed
-                    </h2>
-
-                    <p>
-                        Kite did not return an access token.
-                    </p>
-
-                    <p>
-                        Check Render Logs for the exact Kite response.
-                    </p>
-
-                    <a href="/">Return to RRE</a>
-                </body>
-                </html>
-            `);
-        }
-
-        const accessToken = data.data.access_token;
-        const userId = data.data.user_id || null;
-
-        console.log("Kite access token generated successfully.");
-        console.log("Kite user:", userId || "unknown");
-
-        if (!accessToken) {
-            throw new Error(
-                "Kite response did not contain access_token"
-            );
-        }
-
-        /* =================================================
-           SAVE TOKEN TO POSTGRESQL
-        ================================================= */
-
-        if (!pool || !databaseReady) {
-            throw new Error(
-                "Database is not ready; token cannot be stored."
-            );
-        }
-
-        console.log(
-            "Saving Kite access token to PostgreSQL..."
-        );
-
-        await pool.query(
-            `
-            INSERT INTO kite_tokens
-            (
-                access_token,
-                user_id
-            )
-            VALUES ($1, $2)
-            `,
-            [
-                accessToken,
-                userId
-            ]
-        );
-
-        console.log(
-            "Kite access token stored in PostgreSQL."
-        );
-
-        console.log(
-            "Kite authentication completed successfully."
-        );
-
-        /* =================================================
-           RETURN TO RRE
-        ================================================= */
-
-        res.send(`
-            <!DOCTYPE html>
-
-            <html>
-
-            <head>
-                <meta charset="UTF-8">
-
-                <title>Kite Connected</title>
-
-                <meta
-                    name="viewport"
-                    content="width=device-width,initial-scale=1"
-                >
-
-                <style>
-
-                    body {
-                        font-family: Arial, sans-serif;
-                        background: #f4f7fb;
-                        padding: 30px;
-                        text-align: center;
-                    }
-
-                    .box {
-                        max-width: 500px;
-                        margin: 50px auto;
-                        background: white;
-                        padding: 30px;
-                        border-radius: 16px;
-                        box-shadow:
-                            0 5px 25px
-                            rgba(0,0,0,.12);
-                    }
-
-                    h1 {
-                        color: #198754;
-                    }
-
-                    a {
-                        display: inline-block;
-                        margin-top: 20px;
-                        padding: 12px 22px;
-                        background: #1976d2;
-                        color: white;
-                        text-decoration: none;
-                        border-radius: 8px;
-                    }
-
-                </style>
-
-            </head>
-
-            <body>
-
-                <div class="box">
-
-                    <h1>✓ Kite Connected</h1>
-
-                    <p>
-                        Authentication completed successfully.
-                    </p>
-
-                    <p>
-                        Access token has been securely
-                        stored in PostgreSQL.
-                    </p>
-
-                    <a href="/">
-                        Return to RRE
-                    </a>
-
-                </div>
-
-            </body>
-
-            </html>
-        `);
-
-    } catch (error) {
-
-        console.error(
-            "Kite callback authentication error:",
-            error
-        );
-
-        res.status(500).send(`
-            <html>
-
-            <body
-                style="
-                    font-family:Arial;
-                    padding:30px
-                "
-            >
-
-                <h2 style="color:red">
-                    Kite Authentication Error
-                </h2>
-
-                <p>
-                    ${escapeHtml(error.message)}
-                </p>
-
-                <a href="/">
-                    Return to RRE
-                </a>
-
-            </body>
-
-            </html>
-        `);
-    }
-});
-
-/* =========================================================
-   GET LATEST ACCESS TOKEN
-========================================================= */
-
-async function getLatestToken() {
-
-    if (!pool || !databaseReady) {
-        return null;
+    if (!KITE_API_SECRET) {
+      throw new Error("KITE_API_SECRET is missing");
     }
 
-    try {
+    console.log("Exchanging request_token for access_token...");
 
-        const result = await pool.query(`
-            SELECT
-                access_token,
-                user_id,
-                login_time
-            FROM kite_tokens
-            ORDER BY created_at DESC
-            LIMIT 1
-        `);
+    // -----------------------------------------------
+    // THIS IS THE SAME ALGORITHM YOU PROVIDED
+    // -----------------------------------------------
 
-        if (result.rows.length === 0) {
-            return null;
-        }
+    const data = await kite.generateSession(
+      request_token,
+      KITE_API_SECRET
+    );
 
-        return result.rows[0];
+    console.log("Kite session generated successfully.");
 
-    } catch (error) {
-
-        console.error(
-            "Token database read error:",
-            error.message
-        );
-
-        return null;
+    if (!data || !data.access_token) {
+      throw new Error(
+        "Kite returned no access_token."
+      );
     }
-}
 
-/* =========================================================
-   ROOT / RRE PAGE
-========================================================= */
+    const accessToken = data.access_token;
 
-app.get("/", async (req, res) => {
+    // Set token in Kite client
+    kite.setAccessToken(accessToken);
 
-    const token = await getLatestToken();
+    // -----------------------------------------------
+    // Store token in PostgreSQL
+    // -----------------------------------------------
 
-    const tokenConfigured = !!token;
+    if (!pool) {
+      throw new Error(
+        "DATABASE_URL is missing."
+      );
+    }
+
+    await pool.query(
+      `
+      INSERT INTO kite_sessions
+      (
+        access_token,
+        public_token,
+        user_id,
+        user_name,
+        email,
+        login_time
+      )
+      VALUES ($1,$2,$3,$4,$5,$6)
+      `,
+      [
+        data.access_token,
+        data.public_token || null,
+        data.user_id || null,
+        data.user_name || null,
+        data.email || null,
+        data.login_time
+          ? new Date(data.login_time)
+          : null
+      ]
+    );
+
+    console.log("Access token stored in PostgreSQL.");
+
+    // -----------------------------------------------
+    // Verify token immediately
+    // -----------------------------------------------
+
+    console.log("Testing Kite profile request...");
+
+    const profile = await kite.getProfile();
+
+    console.log(
+      "Kite profile verified:",
+      profile?.user_id || "unknown user"
+    );
 
     res.send(`
-        <!DOCTYPE html>
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kite Connected</title>
 
-        <html>
-
-        <head>
-
-            <meta charset="UTF-8">
-
-            <meta
-                name="viewport"
-                content="width=device-width,initial-scale=1"
-            >
-
-            <title>RRE Backend v3</title>
-
-            <style>
-
-                body {
-                    margin: 0;
-                    padding: 30px;
-                    font-family: Arial, sans-serif;
-                    background: #f4f7fb;
-                }
-
-                .card {
-                    max-width: 700px;
-                    margin: 30px auto;
-                    background: white;
-                    padding: 30px;
-                    border-radius: 18px;
-                    box-shadow:
-                        0 5px 25px
-                        rgba(0,0,0,.10);
-                }
-
-                h1 {
-                    margin-top: 0;
-                }
-
-                .status {
-                    font-size: 18px;
-                    margin: 15px 0;
-                }
-
-                .ok {
-                    color: #198754;
-                    font-weight: bold;
-                }
-
-                .bad {
-                    color: #dc3545;
-                    font-weight: bold;
-                }
-
-                .buttons {
-                    display: flex;
-                    flex-wrap: wrap;
-                    gap: 10px;
-                    margin-top: 25px;
-                }
-
-                a {
-                    background: #1976d2;
-                    color: white;
-                    padding: 13px 18px;
-                    border-radius: 8px;
-                    text-decoration: none;
-                }
-
-            </style>
-
-        </head>
-
-        <body>
-
-            <div class="card">
-
-                <h1>RRE Backend v3</h1>
-
-                <div class="status">
-                    Backend:
-                    <span class="ok">RUNNING</span>
-                </div>
-
-                <div class="status">
-                    Database:
-                    <span class="${databaseReady ? "ok" : "bad"}">
-                        ${databaseReady ? "CONFIGURED" : "NOT CONFIGURED"}
-                    </span>
-                </div>
-
-                <div class="status">
-                    Kite API:
-                    <span
-                        class="${
-                            KITE_API_KEY && KITE_API_SECRET
-                                ? "ok"
-                                : "bad"
-                        }"
-                    >
-                        ${
-                            KITE_API_KEY && KITE_API_SECRET
-                                ? "CONFIGURED"
-                                : "NOT CONFIGURED"
-                        }
-                    </span>
-                </div>
-
-                <div class="status">
-                    Access Token:
-                    <span class="${tokenConfigured ? "ok" : "bad"}">
-                        ${
-                            tokenConfigured
-                                ? "CONFIGURED"
-                                : "NOT CONFIGURED"
-                        }
-                    </span>
-                </div>
-
-                <hr>
-
-                <div class="buttons">
-
-                    <a href="/health">
-                        Health Check
-                    </a>
-
-                    <a href="/status">
-                        Configuration Status
-                    </a>
-
-                    <a href="/kite/login">
-                        Connect Kite
-                    </a>
-
-                </div>
-
-            </div>
-
-        </body>
-
-        </html>
-    `);
-});
-
-/* =========================================================
-   HEALTH
-========================================================= */
-
-app.get("/health", async (req, res) => {
-
-    const token = await getLatestToken();
-
-    res.json({
-        backend: true,
-        kitePackage: true,
-        apiKeyConfigured: !!KITE_API_KEY,
-        apiSecretConfigured: !!KITE_API_SECRET,
-        databaseConfigured: !!DATABASE_URL,
-        databaseReady: databaseReady,
-        accessTokenConfigured: !!token,
-        timestamp: new Date().toISOString()
-    });
-});
-
-/* =========================================================
-   STATUS
-========================================================= */
-
-app.get("/status", async (req, res) => {
-
-    const token = await getLatestToken();
-
-    res.json({
-        backend: true,
-
-        database: {
-            configured: !!DATABASE_URL,
-            ready: databaseReady
-        },
-
-        kite: {
-            apiKeyConfigured: !!KITE_API_KEY,
-            apiSecretConfigured: !!KITE_API_SECRET
-        },
-
-        accessToken: {
-            configured: !!token,
-            userId: token ? token.user_id : null,
-            loginTime: token ? token.login_time : null
-        }
-    });
-});
-
-/* =========================================================
-   ESCAPE HTML
-========================================================= */
-
-function escapeHtml(value) {
-
-    return String(value)
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#039;");
+<style>
+body {
+  font-family: Arial, sans-serif;
+  background: #f4f7fb;
+  padding: 30px;
 }
 
-/* =========================================================
-   START SERVER
-========================================================= */
+.card {
+  max-width: 600px;
+  margin: auto;
+  background: white;
+  padding: 30px;
+  border-radius: 18px;
+  box-shadow: 0 8px 30px rgba(0,0,0,.08);
+}
+
+.ok {
+  color: green;
+  font-weight: bold;
+}
+
+a {
+  display: inline-block;
+  margin-top: 20px;
+  padding: 12px 18px;
+  background: #1976d2;
+  color: white;
+  text-decoration: none;
+  border-radius: 8px;
+}
+</style>
+</head>
+
+<body>
+
+<div class="card">
+
+<h1>✅ Kite Connected</h1>
+
+<p>
+Access Token:
+<span class="ok">STORED</span>
+</p>
+
+<p>
+Kite User:
+<b>${profile?.user_name || data.user_name || "Connected"}</b>
+</p>
+
+<p>
+User ID:
+<b>${profile?.user_id || data.user_id || "—"}</b>
+</p>
+
+<p>
+The access token has been successfully generated,
+verified and stored in PostgreSQL.
+</p>
+
+<a href="/">Return to RRE</a>
+
+</div>
+
+</body>
+</html>
+    `);
+
+  } catch (err) {
+
+    console.error("====================================");
+    console.error("KITE AUTHENTICATION ERROR");
+    console.error(err);
+    console.error("====================================");
+
+    res.status(500).send(`
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kite Authentication Error</title>
+</head>
+
+<body>
+
+<h2>❌ Kite Authentication Failed</h2>
+
+<p>
+The request token could not be exchanged for an access token.
+</p>
+
+<p>
+Check the Render logs for the exact Kite error.
+</p>
+
+<a href="/">Return to RRE</a>
+
+</body>
+</html>
+    `);
+  }
+});
+
+// --------------------------------------------------
+// Test stored token
+// --------------------------------------------------
+
+app.get("/kite/test", async (req, res) => {
+
+  try {
+
+    const session = await getStoredAccessToken();
+
+    if (!session?.access_token) {
+      return res.status(401).json({
+        success: false,
+        message: "No access token stored."
+      });
+    }
+
+    if (!kite) {
+      return res.status(500).json({
+        success: false,
+        message: "Kite client not initialized."
+      });
+    }
+
+    kite.setAccessToken(session.access_token);
+
+    const profile = await kite.getProfile();
+
+    res.json({
+      success: true,
+      message: "Kite access token is working.",
+      user: profile
+    });
+
+  } catch (err) {
+
+    console.error("Kite token test failed:", err.message);
+
+    res.status(500).json({
+      success: false,
+      message: "Stored access token is not working.",
+      error: err.message
+    });
+  }
+});
+
+// --------------------------------------------------
+// RRE market endpoint
+// --------------------------------------------------
+
+app.get("/api/rre/eligible-stocks", async (req, res) => {
+
+  try {
+
+    const session = await getStoredAccessToken();
+
+    if (!session?.access_token) {
+      return res.status(401).json({
+        error: "KITE_ACCESS_TOKEN_NOT_CONFIGURED"
+      });
+    }
+
+    kite.setAccessToken(session.access_token);
+
+    const exchange =
+      req.query.exchange || "NSE";
+
+    const query =
+      String(req.query.query || "")
+        .trim()
+        .toUpperCase();
+
+    // -----------------------------------------------
+    // Search exact instruments
+    // -----------------------------------------------
+
+    const instruments =
+      await kite.getInstruments(exchange);
+
+    let filtered = instruments.filter(item => {
+
+      if (item.instrument_type !== "EQ") {
+        return false;
+      }
+
+      if (!query) {
+        return true;
+      }
+
+      return (
+        String(item.tradingsymbol)
+          .toUpperCase()
+          .includes(query) ||
+        String(item.name || "")
+          .toUpperCase()
+          .includes(query)
+      );
+    });
+
+    // Limit candidate count
+    filtered = filtered.slice(0, 50);
+
+    if (!filtered.length) {
+      return res.json([]);
+    }
+
+    // -----------------------------------------------
+    // Get live prices
+    // -----------------------------------------------
+
+    const symbols = filtered.map(
+      item =>
+        `${item.exchange}:${item.tradingsymbol}`
+    );
+
+    const ltp =
+      await kite.getLTP(symbols);
+
+    const results = filtered
+      .map(item => {
+
+        const key =
+          `${item.exchange}:${item.tradingsymbol}`;
+
+        const quote = ltp?.[key];
+
+        if (!quote) {
+          return null;
+        }
+
+        return {
+          exchange: item.exchange,
+          tradingsymbol: item.tradingsymbol,
+          name: item.name,
+          instrument_token:
+            item.instrument_token,
+          last_price:
+            quote.last_price,
+          change: 0,
+          rre_score: null,
+          risk: "LIVE",
+          day_fit: "LIVE MARKET"
+        };
+      })
+      .filter(Boolean);
+
+    res.json(results);
+
+  } catch (err) {
+
+    console.error(
+      "Eligible stocks error:",
+      err.message
+    );
+
+    res.status(500).json({
+      error: "MARKET_DATA_ERROR",
+      message: err.message
+    });
+  }
+});
+
+// --------------------------------------------------
+// Error handler
+// --------------------------------------------------
+
+app.use((err, req, res, next) => {
+
+  console.error("SERVER ERROR:", err);
+
+  res.status(500).json({
+    error: "SERVER_ERROR",
+    message: err.message
+  });
+});
+
+// --------------------------------------------------
+// Start
+// --------------------------------------------------
 
 async function startServer() {
 
-    await initializeDatabase();
+  try {
 
-    app.listen(PORT, "0.0.0.0", () => {
+    await initDatabase();
 
-        console.log(
-            `RRE backend v3 running on port ${PORT}`
-        );
+    app.listen(PORT, () => {
 
-        console.log(
-            "API key configured:",
-            !!KITE_API_KEY
-        );
+      console.log(
+        `RRE backend v3 running on port ${PORT}`
+      );
 
-        console.log(
-            "API secret configured:",
-            !!KITE_API_SECRET
-        );
+      console.log(
+        `Kite API configured: ${
+          !!KITE_API_KEY && !!KITE_API_SECRET
+        }`
+      );
 
-        console.log(
-            "Database configured:",
-            !!DATABASE_URL
-        );
+      console.log(
+        `Database configured: ${!!pool}`
+      );
 
     });
+
+  } catch (err) {
+
+    console.error(
+      "Failed to start RRE backend:",
+      err
+    );
+
+    process.exit(1);
+  }
 }
 
 startServer();
