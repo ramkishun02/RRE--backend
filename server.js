@@ -555,5 +555,146 @@ async function startServer() {
     process.exit(1);
   }
 }
+// --------------------------------------------------
+// GET STORED KITE ACCESS TOKEN
+// --------------------------------------------------
 
+async function getStoredKiteToken() {
+  if (!db) {
+    throw new Error("Database is not configured");
+  }
+
+  const result = await db.query(`
+    SELECT access_token
+    FROM kite_tokens
+    ORDER BY id DESC
+    LIMIT 1
+  `);
+
+  if (result.rows.length === 0) {
+    return null;
+  }
+
+  return result.rows[0].access_token;
+}
+// --------------------------------------------------
+// LIVE NSE QUOTE
+// --------------------------------------------------
+
+app.get("/api/market/quote", async (req, res) => {
+
+  try {
+
+    const symbol = String(
+      req.query.symbol || ""
+    ).trim().toUpperCase();
+
+    if (!symbol) {
+      return res.status(400).json({
+        success: false,
+        error: "SYMBOL_REQUIRED",
+        message: "Use ?symbol=RELIANCE"
+      });
+    }
+
+    // Get daily Kite access token
+    const accessToken = await getStoredKiteToken();
+
+    if (!accessToken) {
+      return res.status(401).json({
+        success: false,
+        error: "ACCESS_TOKEN_NOT_CONFIGURED",
+        message: "Connect Kite first."
+      });
+    }
+
+    // ----------------------------------------------
+    // Kite API request
+    // ----------------------------------------------
+
+    const url =
+      "https://api.kite.trade/quote/ltp" +
+      "?i=" +
+      encodeURIComponent(`NSE:${symbol}`);
+
+    const response = await fetch(url, {
+      method: "GET",
+
+      headers: {
+        "X-Kite-Version": "3",
+        "Authorization":
+          `token ${KITE_API_KEY}:${accessToken}`
+      }
+    });
+
+    const result = await response.json();
+
+    if (!response.ok || result.status !== "success") {
+
+      console.error(
+        "Kite quote error:",
+        result
+      );
+
+      return res.status(
+        response.status || 500
+      ).json({
+        success: false,
+        error: result.error_type || "KITE_QUOTE_ERROR",
+        message:
+          result.message ||
+          "Unable to retrieve NSE quote."
+      });
+    }
+
+    // ----------------------------------------------
+    // Extract price
+    // ----------------------------------------------
+
+    const instrument =
+      result.data?.[`NSE:${symbol}`];
+
+    if (!instrument) {
+      return res.status(404).json({
+        success: false,
+        error: "SYMBOL_NOT_FOUND",
+        message:
+          `NSE symbol ${symbol} was not found.`
+      });
+    }
+
+    // ----------------------------------------------
+    // RRE response
+    // ----------------------------------------------
+
+    res.json({
+      success: true,
+
+      exchange: "NSE",
+
+      symbol,
+
+      last_price:
+        instrument.last_price,
+
+      timestamp:
+        new Date().toISOString(),
+
+      source: "Kite Connect"
+    });
+
+  } catch (error) {
+
+    console.error(
+      "Live NSE quote error:",
+      error
+    );
+
+    res.status(500).json({
+      success: false,
+      error: "MARKET_DATA_ERROR",
+      message: error.message
+    });
+  }
+});
 startServer();
