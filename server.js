@@ -490,7 +490,19 @@ app.get("/kite/callback", async (req, res) => {
   request_token,
   KITE_API_SECRET
   );
+ app.get("/kite/callback", async (req, res) => {
 
+  // receive request_token
+
+  // create checksum
+
+  // exchange request_token
+
+  // save access_token
+
+  // send success response
+
+});
    console.log("Request token received.");
    console.log("Generating Kite session...");
 
