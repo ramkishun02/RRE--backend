@@ -1,10 +1,12 @@
+"use strict";
+
 const express = require("express");
 const crypto = require("crypto");
 const { Pool } = require("pg");
 
 const app = express();
 
-const PORT = Number(process.env.PORT) || 10000;
+const PORT = Number(process.env.PORT || 10000);
 
 const KITE_API_KEY = process.env.KITE_API_KEY;
 const KITE_API_SECRET = process.env.KITE_API_SECRET;
@@ -26,10 +28,105 @@ if (DATABASE_URL) {
       rejectUnauthorized: false,
     },
   });
+
+  db.on("error", (error) => {
+    console.error("Unexpected PostgreSQL error:", error);
+  });
 }
 
 // --------------------------------------------------
-// DATABASE INITIALIZATION
+// HTML HELPERS
+// --------------------------------------------------
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function renderPage(title, content) {
+  return `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapeHtml(title)}</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 30px 15px;
+      font-family: Arial, sans-serif;
+      background: #f4f6f8;
+      color: #222;
+    }
+
+    .card {
+      max-width: 680px;
+      margin: auto;
+      padding: 30px;
+      background: #fff;
+      border-radius: 16px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12);
+    }
+
+    h1 {
+      margin-top: 0;
+    }
+
+    .status {
+      margin: 12px 0;
+      font-size: 17px;
+    }
+
+    .ok {
+      color: #148a32;
+      font-weight: bold;
+    }
+
+    .bad {
+      color: #c62828;
+      font-weight: bold;
+    }
+
+    .button {
+      display: inline-block;
+      margin: 8px 6px 0 0;
+      padding: 12px 18px;
+      color: #fff;
+      background: #1976d2;
+      border-radius: 8px;
+      text-decoration: none;
+    }
+
+    .button:hover {
+      background: #125ca3;
+    }
+
+    code {
+      word-break: break-all;
+    }
+
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+  </style>
+</head>
+<body>
+  <main class="card">
+    ${content}
+  </main>
+</body>
+</html>
+`;
+}
+
+// --------------------------------------------------
+// DATABASE
 // --------------------------------------------------
 
 async function initializeDatabase() {
@@ -50,17 +147,6 @@ async function initializeDatabase() {
   `);
 
   console.log("RRE database initialized.");
-}
-
-// --------------------------------------------------
-// HELPERS
-// --------------------------------------------------
-
-function createChecksum(apiKey, requestToken, apiSecret) {
-  return crypto
-    .createHash("sha256")
-    .update(apiKey + requestToken + apiSecret)
-    .digest("hex");
 }
 
 async function saveAccessToken(accessToken, userId, loginTime) {
@@ -86,18 +172,41 @@ async function saveAccessToken(accessToken, userId, loginTime) {
 
 async function getStoredKiteToken() {
   if (!db) {
-    throw new Error("Database is not configured.");
+    return null;
   }
 
   const result = await db.query(`
     SELECT access_token
     FROM kite_tokens
-    WHERE expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP
+    WHERE expires_at IS NULL
+       OR expires_at > CURRENT_TIMESTAMP
     ORDER BY id DESC
     LIMIT 1
   `);
 
-  return result.rows.length > 0 ? result.rows[0].access_token : null;
+  if (result.rows.length === 0) {
+    return null;
+  }
+
+  return result.rows[0].access_token;
+}
+
+// --------------------------------------------------
+// KITE HELPERS
+// --------------------------------------------------
+
+function createChecksum(apiKey, requestToken, apiSecret) {
+  return crypto
+    .createHash("sha256")
+    .update(apiKey + requestToken + apiSecret)
+    .digest("hex");
+}
+
+function getKiteLoginUrl() {
+  return (
+    "https://kite.zerodha.com/connect/login" +
+    `?v=3&api_key=${encodeURIComponent(KITE_API_KEY)}`
+  );
 }
 
 // --------------------------------------------------
@@ -106,53 +215,153 @@ async function getStoredKiteToken() {
 
 app.get("/", async (req, res) => {
   try {
-    const accessToken = db ? await getStoredKiteToken() : null;
+    const accessToken = await getStoredKiteToken();
 
     const databaseConfigured = Boolean(DATABASE_URL);
-    const kiteConfigured = Boolean(KITE_API_KEY && KITE_API_SECRET);
+    const kiteConfigured = Boolean(
+      KITE_API_KEY && KITE_API_SECRET
+    );
+    const tokenConfigured = Boolean(accessToken);
 
-    res.send(`
-      <!DOCTYPE html>
-      <html>
-        <head>
-          <title>RRE Backend</title>
-          <meta charset="UTF-8" />
-        </head>
-        <body>
+    res.send(
+      renderPage(
+        "RRE Backend",
+        `
           <h1>RRE Backend</h1>
 
-          <p>Server is running.</p>
+          <div class="status">
+            Backend:
+            <span class="ok">RUNNING</span>
+          </div>
 
-          <p>
+          <div class="status">
             Database:
-            ${databaseConfigured ? "Configured" : "Not configured"}
-          </p>
+            <span class="${databaseConfigured ? "ok" : "bad"}">
+              ${databaseConfigured ? "CONFIGURED" : "NOT CONFIGURED"}
+            </span>
+          </div>
 
-          <p>
+          <div class="status">
             Kite API:
-            ${kiteConfigured ? "Configured" : "Not configured"}
-          </p>
+            <span class="${kiteConfigured ? "ok" : "bad"}">
+              ${kiteConfigured ? "CONFIGURED" : "NOT CONFIGURED"}
+            </span>
+          </div>
+
+          <div class="status">
+            Access token:
+            <span class="${tokenConfigured ? "ok" : "bad"}">
+              ${tokenConfigured ? "CONNECTED" : "NOT CONNECTED"}
+            </span>
+          </div>
+
+          <hr>
 
           <p>
-            Kite token:
-            ${accessToken ? "Connected" : "Not connected"}
+            <strong>Callback URL:</strong><br>
+            <code>${escapeHtml(CALLBACK_URL)}</code>
           </p>
 
-          <p>
-            Callback URL:
-            <code>${CALLBACK_URL}</code>
-          </p>
-        </body>
-      </html>
-    `);
+          <a class="button" href="/health">Health Check</a>
+          <a class="button" href="/status">Status</a>
+          <a class="button" href="/kite/login">Connect Kite</a>
+        `
+      )
+    );
   } catch (error) {
     console.error("Home route error:", error);
 
-    res.status(500).send(`
-      <h1>Server error</h1>
-      <p>${error.message}</p>
-    `);
+    res.status(500).send(
+      renderPage(
+        "Server Error",
+        `
+          <h1>Server error</h1>
+          <p>${escapeHtml(error.message)}</p>
+          <a class="button" href="/">Return home</a>
+        `
+      )
+    );
   }
+});
+
+// --------------------------------------------------
+// HEALTH CHECK
+// --------------------------------------------------
+
+app.get("/health", async (req, res) => {
+  let databaseReady = false;
+
+  if (db) {
+    try {
+      await db.query("SELECT 1");
+      databaseReady = true;
+    } catch (error) {
+      console.error("Database health check failed:", error.message);
+    }
+  }
+
+  const accessToken = await getStoredKiteToken();
+
+  res.json({
+    backend: true,
+    databaseConfigured: Boolean(DATABASE_URL),
+    databaseReady,
+    kiteConfigured: Boolean(KITE_API_KEY && KITE_API_SECRET),
+    accessTokenConfigured: Boolean(accessToken),
+    callbackUrl: CALLBACK_URL,
+    timestamp: new Date().toISOString(),
+  });
+});
+
+// --------------------------------------------------
+// STATUS
+// --------------------------------------------------
+
+app.get("/status", async (req, res) => {
+  let accessTokenConfigured = false;
+
+  try {
+    accessTokenConfigured = Boolean(await getStoredKiteToken());
+  } catch (error) {
+    console.error("Status token check failed:", error.message);
+  }
+
+  res.json({
+    backend: true,
+    apiKeyConfigured: Boolean(KITE_API_KEY),
+    apiSecretConfigured: Boolean(KITE_API_SECRET),
+    databaseConfigured: Boolean(DATABASE_URL),
+    accessTokenConfigured,
+    callbackUrl: CALLBACK_URL,
+    timestamp: new Date().toISOString(),
+  });
+});
+
+// --------------------------------------------------
+// KITE LOGIN
+// --------------------------------------------------
+
+app.get("/kite/login", (req, res) => {
+  if (!KITE_API_KEY) {
+    return res.status(500).send(
+      renderPage(
+        "Kite Configuration Error",
+        `
+          <h1>Kite configuration error</h1>
+          <p>
+            <code>KITE_API_KEY</code> is missing in the environment variables.
+          </p>
+          <a class="button" href="/">Return home</a>
+        `
+      )
+    );
+  }
+
+  const loginUrl = getKiteLoginUrl();
+
+  console.log("Redirecting to Kite login.");
+
+  return res.redirect(loginUrl);
 });
 
 // --------------------------------------------------
@@ -160,44 +369,71 @@ app.get("/", async (req, res) => {
 // --------------------------------------------------
 
 app.get("/kite/callback", async (req, res) => {
-  const { request_token: requestToken, action, message } = req.query;
+  const {
+    request_token: requestToken,
+    status,
+    message,
+  } = req.query;
 
-  if (action === "login" && message) {
-    return res.status(400).send(`
-      <h1>Kite login failed</h1>
-      <p>${message}</p>
-      <p><a href="/">Return to RRE</a></p>
-    `);
+  console.log("Kite callback received.");
+  console.log("Callback status:", status);
+
+  if (status === "error") {
+    return res.status(400).send(
+      renderPage(
+        "Kite Login Failed",
+        `
+          <h1>Kite login failed</h1>
+          <p>${escapeHtml(message || "Kite returned an error.")}</p>
+          <a class="button" href="/kite/login">Try again</a>
+        `
+      )
+    );
   }
 
   if (!requestToken) {
-    return res.status(400).send(`
-      <h1>Kite login failed</h1>
-      <p>Kite did not return a request_token.</p>
-      <p>Check that the Redirect URL exactly matches:</p>
-      <p><code>${CALLBACK_URL}</code></p>
-      <p><a href="/">Return to RRE</a></p>
-    `);
+    return res.status(400).send(
+      renderPage(
+        "Request Token Missing",
+        `
+          <h1>Request token missing</h1>
+          <p>Kite did not return a request token.</p>
+          <p>Verify this Redirect URL in the Kite developer console:</p>
+          <p><code>${escapeHtml(CALLBACK_URL)}</code></p>
+          <a class="button" href="/kite/login">Try again</a>
+        `
+      )
+    );
   }
 
   if (!KITE_API_KEY || !KITE_API_SECRET) {
-    return res.status(500).send(`
-      <h1>Configuration error</h1>
-      <p>Add KITE_API_KEY and KITE_API_SECRET to the environment variables.</p>
-    `);
+    return res.status(500).send(
+      renderPage(
+        "Kite Configuration Error",
+        `
+          <h1>Kite configuration error</h1>
+          <p>
+            Configure both <code>KITE_API_KEY</code> and
+            <code>KITE_API_SECRET</code>.
+          </p>
+        `
+      )
+    );
   }
 
   if (!db) {
-    return res.status(500).send(`
-      <h1>Database error</h1>
-      <p>DATABASE_URL is not configured.</p>
-    `);
+    return res.status(500).send(
+      renderPage(
+        "Database Configuration Error",
+        `
+          <h1>Database configuration error</h1>
+          <p><code>DATABASE_URL</code> is not configured.</p>
+        `
+      )
+    );
   }
 
   try {
-    console.log("Request token received.");
-    console.log("Generating Kite session...");
-
     const checksum = createChecksum(
       KITE_API_KEY,
       requestToken,
@@ -228,58 +464,75 @@ app.get("/kite/callback", async (req, res) => {
       "Kite session response:",
       JSON.stringify({
         status: result.status,
-        error_type: result.error_type,
+        errorType: result.error_type,
         message: result.message,
       })
     );
 
     if (!response.ok || result.status !== "success") {
-      return res.status(400).send(`
-        <h1>Token exchange failed</h1>
-        <p>${result.message || "Unable to create Kite session."}</p>
-        <p>Error type: ${result.error_type || "Unknown"}</p>
-        <p>The request token may be expired or already used.</p>
-        <p><a href="/">Return to RRE</a></p>
-      `);
+      return res.status(400).send(
+        renderPage(
+          "Kite Authentication Failed",
+          `
+            <h1>Kite authentication failed</h1>
+            <p>${escapeHtml(
+              result.message || "Token exchange failed."
+            )}</p>
+            <p>
+              Error type:
+              ${escapeHtml(result.error_type || "unknown")}
+            </p>
+            <p>
+              The request token may have expired or already been used.
+            </p>
+            <a class="button" href="/kite/login">Try again</a>
+          `
+        )
+      );
     }
 
     const data = result.data || {};
-
     const accessToken = data.access_token;
     const userId = data.user_id;
     const loginTime = data.login_time;
 
     if (!accessToken) {
-      throw new Error("Kite response did not contain access_token.");
+      throw new Error(
+        "Kite response did not contain an access token."
+      );
     }
 
     await saveAccessToken(accessToken, userId, loginTime);
 
     console.log("Kite access token saved.");
 
-    return res.send(`
-      <!DOCTYPE html>
-      <html>
-        <head>
-          <title>Kite Authentication Successful</title>
-          <meta charset="UTF-8" />
-        </head>
-        <body>
-          <h1>Authentication successful</h1>
-          <p>Your Kite access token has been stored securely.</p>
-          <p>User ID: ${userId || "Connected"}</p>
-          <p><a href="/">Return to RRE</a></p>
-        </body>
-      </html>
-    `);
+    return res.send(
+      renderPage(
+        "Kite Connected",
+        `
+          <h1>Kite connected successfully</h1>
+          <p>Your Kite access token has been stored in PostgreSQL.</p>
+          <p>
+            User ID:
+            <strong>${escapeHtml(userId || "Connected")}</strong>
+          </p>
+          <a class="button" href="/">Return to RRE</a>
+        `
+      )
+    );
   } catch (error) {
     console.error("Kite callback error:", error);
 
-    return res.status(500).send(`
-      <h1>Authentication error</h1>
-      <p>${error.message}</p>
-      <p><a href="/">Return to RRE</a></p>
-    `);
+    return res.status(500).send(
+      renderPage(
+        "Kite Callback Error",
+        `
+          <h1>Kite callback error</h1>
+          <p>${escapeHtml(error.message)}</p>
+          <a class="button" href="/kite/login">Try again</a>
+        `
+      )
+    );
   }
 });
 
@@ -321,11 +574,11 @@ app.get("/api/market/quote", async (req, res) => {
 
     const instrument = `NSE:${symbol}`;
 
-    const url =
+    const quoteUrl =
       "https://api.kite.trade/quote/ltp" +
       `?i=${encodeURIComponent(instrument)}`;
 
-    const response = await fetch(url, {
+    const response = await fetch(quoteUrl, {
       method: "GET",
       headers: {
         "X-Kite-Version": "3",
@@ -376,6 +629,36 @@ app.get("/api/market/quote", async (req, res) => {
 });
 
 // --------------------------------------------------
+// 404 HANDLER
+// --------------------------------------------------
+
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    error: "NOT_FOUND",
+    message: `Route ${req.method} ${req.originalUrl} was not found.`,
+  });
+});
+
+// --------------------------------------------------
+// GLOBAL ERROR HANDLER
+// --------------------------------------------------
+
+app.use((error, req, res, next) => {
+  console.error("Unhandled server error:", error);
+
+  if (res.headersSent) {
+    return next(error);
+  }
+
+  return res.status(500).json({
+    success: false,
+    error: "INTERNAL_SERVER_ERROR",
+    message: error.message,
+  });
+});
+
+// --------------------------------------------------
 // START SERVER
 // --------------------------------------------------
 
@@ -383,7 +666,7 @@ async function startServer() {
   try {
     await initializeDatabase();
 
-    app.listen(PORT, () => {
+    app.listen(PORT, "0.0.0.0", () => {
       console.log(`RRE backend running on port ${PORT}`);
       console.log(`Callback URL: ${CALLBACK_URL}`);
     });
