@@ -17,6 +17,9 @@ const BASE_URL =
 const CALLBACK_URL =
   process.env.KITE_REDIRECT_URL || `${BASE_URL}/kite/callback`;
 
+const DASHBOARD_URL =
+  process.env.DASHBOARD_URL || `${BASE_URL}/dashboard`;
+
 const DATABASE_URL = process.env.DATABASE_URL;
 
 let db = null;
@@ -65,7 +68,7 @@ function renderPage(title, content) {
     }
 
     .card {
-      max-width: 680px;
+      max-width: 760px;
       margin: auto;
       padding: 30px;
       background: #fff;
@@ -98,12 +101,25 @@ function renderPage(title, content) {
       padding: 12px 18px;
       color: #fff;
       background: #1976d2;
+      border: 0;
       border-radius: 8px;
       text-decoration: none;
+      cursor: pointer;
+      font-size: 15px;
     }
 
     .button:hover {
       background: #125ca3;
+    }
+
+    input {
+      width: 100%;
+      box-sizing: border-box;
+      margin: 8px 0;
+      padding: 12px;
+      border: 1px solid #bbb;
+      border-radius: 7px;
+      font-size: 16px;
     }
 
     code {
@@ -111,8 +127,12 @@ function renderPage(title, content) {
     }
 
     pre {
+      min-height: 80px;
+      padding: 15px;
       white-space: pre-wrap;
       word-break: break-word;
+      background: #f0f2f4;
+      border-radius: 8px;
     }
   </style>
 </head>
@@ -265,6 +285,7 @@ app.get("/", async (req, res) => {
           <a class="button" href="/health">Health Check</a>
           <a class="button" href="/status">Status</a>
           <a class="button" href="/kite/login">Connect Kite</a>
+          <a class="button" href="/dashboard">Dashboard</a>
         `
       )
     );
@@ -309,6 +330,7 @@ app.get("/health", async (req, res) => {
     kiteConfigured: Boolean(KITE_API_KEY && KITE_API_SECRET),
     accessTokenConfigured: Boolean(accessToken),
     callbackUrl: CALLBACK_URL,
+    dashboardUrl: DASHBOARD_URL,
     timestamp: new Date().toISOString(),
   });
 });
@@ -333,6 +355,7 @@ app.get("/status", async (req, res) => {
     databaseConfigured: Boolean(DATABASE_URL),
     accessTokenConfigured,
     callbackUrl: CALLBACK_URL,
+    dashboardUrl: DASHBOARD_URL,
     timestamp: new Date().toISOString(),
   });
 });
@@ -492,6 +515,7 @@ app.get("/kite/callback", async (req, res) => {
     }
 
     const data = result.data || {};
+
     const accessToken = data.access_token;
     const userId = data.user_id;
     const loginTime = data.login_time;
@@ -505,21 +529,9 @@ app.get("/kite/callback", async (req, res) => {
     await saveAccessToken(accessToken, userId, loginTime);
 
     console.log("Kite access token saved.");
+    console.log("Redirecting to dashboard:", DASHBOARD_URL);
 
-    return res.send(
-      renderPage(
-        "Kite Connected",
-        `
-          <h1>Kite connected successfully</h1>
-          <p>Your Kite access token has been stored in PostgreSQL.</p>
-          <p>
-            User ID:
-            <strong>${escapeHtml(userId || "Connected")}</strong>
-          </p>
-          <a class="button" href="/">Return to RRE</a>
-        `
-      )
-    );
+    return res.redirect(DASHBOARD_URL);
   } catch (error) {
     console.error("Kite callback error:", error);
 
@@ -530,6 +542,102 @@ app.get("/kite/callback", async (req, res) => {
           <h1>Kite callback error</h1>
           <p>${escapeHtml(error.message)}</p>
           <a class="button" href="/kite/login">Try again</a>
+        `
+      )
+    );
+  }
+});
+
+// --------------------------------------------------
+// DASHBOARD
+// --------------------------------------------------
+
+app.get("/dashboard", async (req, res) => {
+  try {
+    const accessToken = await getStoredKiteToken();
+
+    if (!accessToken) {
+      return res.redirect("/kite/login");
+    }
+
+    res.send(
+      renderPage(
+        "RRE Dashboard",
+        `
+          <h1>RRE Dashboard</h1>
+
+          <p class="ok">
+            Kite authentication is active.
+          </p>
+
+          <p>
+            Enter an NSE symbol to retrieve the live quote.
+          </p>
+
+          <label for="symbol">NSE Symbol</label>
+          <input
+            id="symbol"
+            type="text"
+            value="RELIANCE"
+            placeholder="RELIANCE"
+          >
+
+          <button class="button" onclick="loadQuote()">
+            Get Live Quote
+          </button>
+
+          <pre id="result">Enter a symbol and click Get Live Quote.</pre>
+
+          <a class="button" href="/">Home</a>
+
+          <script>
+            async function loadQuote() {
+              const symbol = document
+                .getElementById("symbol")
+                .value
+                .trim()
+                .toUpperCase();
+
+              const resultElement =
+                document.getElementById("result");
+
+              if (!symbol) {
+                resultElement.textContent =
+                  "Please enter an NSE symbol.";
+                return;
+              }
+
+              resultElement.textContent = "Loading...";
+
+              try {
+                const response = await fetch(
+                  "/api/market/quote?symbol=" +
+                  encodeURIComponent(symbol)
+                );
+
+                const data = await response.json();
+
+                resultElement.textContent =
+                  JSON.stringify(data, null, 2);
+              } catch (error) {
+                resultElement.textContent =
+                  "Request failed: " + error.message;
+              }
+            }
+          </script>
+        `
+      )
+    );
+  } catch (error) {
+    console.error("Dashboard error:", error);
+
+    res.status(500).send(
+      renderPage(
+        "Dashboard Error",
+        `
+          <h1>Dashboard error</h1>
+          <p>${escapeHtml(error.message)}</p>
+          <a class="button" href="/">Return home</a>
         `
       )
     );
@@ -669,6 +777,7 @@ async function startServer() {
     app.listen(PORT, "0.0.0.0", () => {
       console.log(`RRE backend running on port ${PORT}`);
       console.log(`Callback URL: ${CALLBACK_URL}`);
+      console.log(`Dashboard URL: ${DASHBOARD_URL}`);
     });
   } catch (error) {
     console.error("Server startup error:", error);
