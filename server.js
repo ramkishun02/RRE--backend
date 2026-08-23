@@ -485,41 +485,38 @@ app.get("/kite/callback", async (req, res) => {
     // CREATE SHA256 CHECKSUM
     // ------------------------------------------------
 
-    const checksum = createChecksum(
-      KITE_API_KEY,
-      request_token,
-      KITE_API_SECRET
-    );
-    app.get("/kite/callback", async (req, res) => {
-   ...
-});
-    console.log("Request token received.");
-    console.log("Generating Kite session...");
+  const checksum = createChecksum(
+  KITE_API_KEY,
+  request_token,
+  KITE_API_SECRET
+  );
 
-    // ------------------------------------------------
-    // TOKEN EXCHANGE
-    // ------------------------------------------------
+   console.log("Request token received.");
+   console.log("Generating Kite session...");
 
-    const body = new URLSearchParams();
+// ------------------------------------------------
+// TOKEN EXCHANGE
+// ------------------------------------------------
 
-    body.append("api_key", KITE_API_KEY);
-    body.append("request_token", request_token);
-    body.append("checksum", checksum);
+const body = new URLSearchParams();
 
-    const response = await fetch(
-      "https://api.kite.trade/session/token",
-      {
-        method: "POST",
+body.append("api_key", KITE_API_KEY);
+body.append("request_token", request_token);
+body.append("checksum", checksum);
 
-        headers: {
-          "X-Kite-Version": "3",
-          "Content-Type":
-            "application/x-www-form-urlencoded"
-        },
+const response = await fetch(
+  "https://api.kite.trade/session/token",
+  {
+    method: "POST",
 
-        body: body.toString()
-      }
-    );
+    headers: {
+      "X-Kite-Version": "3",
+      "Content-Type": "application/x-www-form-urlencoded"
+    },
+
+    body: body.toString()
+  }
+);
 
     const result = await response.json();
 
