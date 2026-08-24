@@ -1,9 +1,192 @@
-<!doctype html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>RRE Backend</title></head>
-<body style="font-family:Arial;padding:30px">
-<h1>RRE Backend</h1><p>Backend is running.</p>
-<p><a href="/health">Health check</a></p>
-<p><a href="/api/status">Configuration status</a></p>
-<p><a href="/kite/login">Connect Kite</a></p>
-</body></html>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Investly Investment App</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+
+<body>
+  <div class="app-shell">
+
+    <!-- Desktop left sidebar -->
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <div class="brand-logo">I</div>
+        <div>
+          <h2>Investly</h2>
+          <span>SMART INVESTING</span>
+        </div>
+      </div>
+
+      <div class="connection-status">
+        <span class="status-dot"></span>
+        <span>Kite connected</span>
+      </div>
+
+      <nav class="side-navigation">
+        <button class="side-link active" data-page="home">
+          <span>⌂</span>
+          <span>Home</span>
+        </button>
+
+        <button class="side-link" data-page="ai">
+          <span>✦</span>
+          <span>AI Recommendation</span>
+        </button>
+
+        <button class="side-link" data-page="order">
+          <span>↗</span>
+          <span>Order</span>
+        </button>
+
+        <button class="side-link" data-page="monitor">
+          <span>◉</span>
+          <span>Monitor</span>
+        </button>
+
+        <button class="side-link" data-page="history">
+          <span>▤</span>
+          <span>History</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-section-title">MORE</div>
+
+      <nav class="side-navigation">
+        <button class="side-link" data-page="portfolio">
+          <span>▣</span>
+          <span>Portfolio</span>
+        </button>
+
+        <button class="side-link" data-page="holdings">
+          <span>◫</span>
+          <span>Holdings</span>
+        </button>
+
+        <button class="side-link" data-page="performance">
+          <span>◒</span>
+          <span>Performance</span>
+        </button>
+
+        <button class="side-link" data-page="reports">
+          <span>▧</span>
+          <span>Reports</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <button class="side-link">
+          <span>⚙</span>
+          <span>Settings</span>
+        </button>
+
+        <button class="side-link">
+          <span>?</span>
+          <span>Help & Support</span>
+        </button>
+      </div>
+    </aside>
+
+    <!-- Main application -->
+    <main class="main-area">
+
+      <!-- Header -->
+      <header class="top-header">
+        <div class="header-left">
+          <button class="mobile-menu-button" id="mobileMenuButton">☰</button>
+
+          <div>
+            <p class="eyebrow">INVESTMENT CONTROL CENTER</p>
+            <h1 id="pageTitle">Home</h1>
+          </div>
+        </div>
+
+        <div class="header-actions">
+          <span class="mode-badge" id="modeBadge">PAPER MODE</span>
+
+          <button class="icon-button" id="refreshButton" title="Refresh">
+            ↻
+          </button>
+
+          <button class="icon-button notification-button">
+            ♢
+            <span class="notification-dot"></span>
+          </button>
+
+          <div class="user-profile">
+            <div class="avatar">A</div>
+            <div class="user-details">
+              <strong>Arjun Mehta</strong>
+              <small>Kite connected</small>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <!-- Scrollable top menu -->
+      <div class="scroll-menu-wrapper">
+        <div class="scroll-menu">
+          <button class="scroll-menu-item active" data-page="home">
+            Overview
+          </button>
+
+          <button class="scroll-menu-item" data-page="portfolio">
+            Portfolio
+          </button>
+
+          <button class="scroll-menu-item" data-page="holdings">
+            Holdings
+          </button>
+
+          <button class="scroll-menu-item" data-page="performance">
+            Performance
+          </button>
+
+          <button class="scroll-menu-item" data-page="reports">
+            Reports
+          </button>
+        </div>
+      </div>
+
+      <!-- Page content -->
+      <section class="page-container" id="pageContainer"></section>
+    </main>
+
+    <!-- Mobile bottom navigation -->
+    <nav class="bottom-navigation">
+      <button class="bottom-link active" data-page="home">
+        <span>⌂</span>
+        <small>Home</small>
+      </button>
+
+      <button class="bottom-link" data-page="ai">
+        <span>✦</span>
+        <small>AI Picks</small>
+      </button>
+
+      <button class="bottom-link" data-page="order">
+        <span>↗</span>
+        <small>Order</small>
+      </button>
+
+      <button class="bottom-link" data-page="monitor">
+        <span>◉</span>
+        <small>Monitor</small>
+      </button>
+
+      <button class="bottom-link" data-page="history">
+        <span>▤</span>
+        <small>History</small>
+      </button>
+    </nav>
+
+    <!-- Toast notification -->
+    <div class="toast" id="toast"></div>
+
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
