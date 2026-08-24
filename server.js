@@ -1,5 +1,5 @@
 "use strict";
-
+const path = require("path");
 const express = require("express");
 const crypto = require("crypto");
 const { Pool } = require("pg");
@@ -285,7 +285,7 @@ app.get("/", async (req, res) => {
           <a class="button" href="/health">Health Check</a>
           <a class="button" href="/status">Status</a>
           <a class="button" href="/kite/login">Connect Kite</a>
-          <a class="button" href="/dashboard">Dashboard</a>
+          <a class="button" href="/index">Dashboard</a>
         `
       )
     );
@@ -784,5 +784,14 @@ async function startServer() {
     process.exit(1);
   }
 }
+const express = require("express");
+const app = express();
 
+app.get("/", (req, res) => {
+  res.send("Hello");
+});
+
+app.listen(5000, () => {
+  console.log("Server started at http://localhost:5000");
+});
 startServer();
