@@ -1320,3 +1320,29 @@ textarea {
     font-size: 26px;
   }
 }
+.search-results {
+  margin-top: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.search-item {
+  width: 100%;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card-light);
+  color: white;
+  text-align: left;
+}
+
+.search-item strong {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.search-item span,
+.search-item small {
+  display: block;
+  color: var(--muted);
+}

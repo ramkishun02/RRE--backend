@@ -284,7 +284,7 @@ function renderHome() {
   return `
     <div class="page-heading">
       <div>
-        <h2>Good morning, Arjun 👋</h2>
+        <h2>Good morning, Vibha👋</h2>
         <p>Control your investment strategy from one place.</p>
       </div>
 
@@ -1526,7 +1526,6 @@ function exitStrategy(reason) {
   showToast(`Strategy exited. Result: ${formatSignedMoney(profit)}`);
   renderCurrentPage();
 }
-
 function calculateSummary() {
   const holdings = getHoldings();
 

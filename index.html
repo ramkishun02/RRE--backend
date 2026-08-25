@@ -3,204 +3,222 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Investly Investment App</title>
-  <link rel="stylesheet" href="/Style.css" />
+  <title>Investment Dashboard</title>
+  <link rel="stylesheet" href="/style.css" />
 </head>
-
 <body>
-  <div class="app-shell">
-
-    <!-- Desktop left sidebar -->
-    <aside class="sidebar" id="sidebar">
-      <div class="brand">
-        <div class="brand-logo">I</div>
-        <div>
-          <h2>Investly</h2>
-          <span>SMART INVESTING</span>
-        </div>
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <div class="brand-logo">R</div>
+      <div>
+        <h2>RRE</h2>
+        <span>INVESTMENT PANEL</span>
       </div>
+    </div>
 
-      <div class="connection-status">
-        <span class="status-dot"></span>
-          <a href="/kite/login" class="primary-button">Connect Kite</a>
-        <span>Kite connected</span>
-      </div>
+    <div class="connection-status" id="kiteStatusBox">
+      <span class="status-dot"></span>
+      <span id="kiteStatusText">Checking Kite connection...</span>
+    </div>
 
-      <nav class="side-navigation">
-        <button class="side-link active" data-page="home">
-          <span>⌂</span>
-          <span>Home</span>
-        </button>
-
-        <button class="side-link" data-page="ai">
-          <span>✦</span>
-          <span>AI Recommendation</span>
-        </button>
-
-        <button class="side-link" data-page="order">
-          <span>↗</span>
-          <span>Order</span>
-        </button>
-
-        <button class="side-link" data-page="monitor">
-          <span>◉</span>
-          <span>Monitor</span>
-        </button>
-
-        <button class="side-link" data-page="history">
-          <span>▤</span>
-          <span>History</span>
-        </button>
-      </nav>
-
-      <div class="sidebar-section-title">MORE</div>
-
-      <nav class="side-navigation">
-        <button class="side-link" data-page="portfolio">
-          <span>▣</span>
-          <span>Portfolio</span>
-        </button>
-
-        <button class="side-link" data-page="holdings">
-          <span>◫</span>
-          <span>Holdings</span>
-        </button>
-
-        <button class="side-link" data-page="performance">
-          <span>◒</span>
-          <span>Performance</span>
-        </button>
-
-        <button class="side-link" data-page="reports">
-          <span>▧</span>
-          <span>Reports</span>
-        </button>
-      </nav>
-
-      <div class="sidebar-footer">
-        <button class="side-link">
-          <span>◉</span>
-          <span>Logout</span>
-        </button>
-        <div class="sidebar-footer">
-        <button class="side-link">
-          <span>⚙</span>
-          <span>Settings</span>
-        </button>
-        <button class="side-link">
-          <span>?</span>
-          <span>Help & Support</span>
-        </button>
-      </div>
-    </aside>
-
-    <!-- Main application -->
-    <main class="main-area">
-
-      <!-- Header -->
-      <header class="top-header">
-        <div class="header-left">
-          <button class="mobile-menu-button" id="mobileMenuButton">☰</button>
-
-          <div>
-            <p class="eyebrow">INVESTMENT TOOL</p>
-            <h1 id="pageTitle">Home</h1>
-          </div>
-        </div>
-
-        <div class="header-actions">
-          <span class="mode-badge" id="modeBadge">PAPER MODE</span>
-
-          <button class="icon-button" id="refreshButton" title="Refresh">
-            ↻
-          </button>
-
-          <button class="icon-button notification-button">
-            ♢
-            <span class="notification-dot"></span>
-          </button>
-
-          <div class="user-profile">
-            <div class="avatar">V</div>
-            <div class="user-details">
-              <strong>Vibha</strong>
-              <small>Kite connected</small>
-            </div>
-          </div>
-        </div>
-      </header>
-
-      <!-- Scrollable top menu -->
-      <div class="scroll-menu-wrapper">
-        <div class="scroll-menu">
-          <button class="scroll-menu-item active" data-page="home">
-            Overview
-          </button>
-
-          <button class="scroll-menu-item" data-page="portfolio">
-            Portfolio
-          </button>
-
-          <button class="scroll-menu-item" data-page="holdings">
-            Holdings
-          </button>
-
-          <button class="scroll-menu-item" data-page="performance">
-            Performance
-          </button>
-
-          <button class="scroll-menu-item" data-page="reports">
-            Reports
-          </button>
-        </div>
-      </div>
-
-      <!-- Page content -->
-      <section class="page-container" id="pageContainer"></section>
-    </main>
-
-    <!-- Mobile bottom navigation -->
-    <nav class="bottom-navigation">
-      <button class="bottom-link active" data-page="home">
-        <span>⌂</span>
-        <small>Home</small>
+    <div class="sidebar-section-title">MENU</div>
+    <nav class="side-navigation">
+      <button class="side-link active" data-page="home">
+        <span>🏠</span><span>Home</span>
       </button>
-
-      <button class="bottom-link" data-page="ai">
-        <span>✦</span>
-        <small>AI Picks</small>
+      <button class="side-link" data-page="search">
+        <span>🔎</span><span>Stock Search</span>
       </button>
-
-      <button class="bottom-link" data-page="order">
-        <span>↗</span>
-        <small>Order</small>
+      <button class="side-link" data-page="order">
+        <span>🧾</span><span>Order Preview</span>
       </button>
-
-      <button class="bottom-link" data-page="monitor">
-        <span>◉</span>
-        <small>Monitor</small>
-      </button>
-
-      <button class="bottom-link" data-page="history">
-        <span>▤</span>
-        <small>History</small>
+      <button class="side-link" data-page="history">
+        <span>📊</span><span>History</span>
       </button>
     </nav>
 
-    <!-- Toast notification -->
-    <div class="toast" id="toast"></div>
-  </div>
-  <div class="form-group">
-  <label for="stockSearch">Search stock</label>
-  <input
-    type="text"
-    id="stockSearch"
-    placeholder="Type symbol or company name"
-    autocomplete="off"
-  />
-  <div id="searchResults" class="search-results"></div>
-</div>
-  <script src="/app.js"></script>
+    <div class="sidebar-section-title">ACCOUNT</div>
+    <div class="sidebar-footer">
+      <a class="side-link" href="/kite/login">
+        <span>🔗</span><span>Connect Kite</span>
+      </a>
+      <button class="side-link danger-button" id="logoutButton">
+        <span>⎋</span><span>Logout</span>
+      </button>
+    </div>
+  </aside>
 
+  <main class="main-area">
+    <header class="top-header">
+      <div class="header-left">
+        <button class="mobile-menu-button" id="menuToggle">☰</button>
+        <div>
+          <p class="eyebrow">RRE DASHBOARD</p>
+          <h1>Investment Dashboard</h1>
+        </div>
+      </div>
+
+      <div class="header-actions">
+        <span class="mode-badge" id="modeBadge">PAPER MODE</span>
+        <a class="primary-button" href="/kite/login">Connect Kite</a>
+      </div>
+    </header>
+
+    <section class="scroll-menu-wrapper">
+      <div class="scroll-menu">
+        <button class="scroll-menu-item active" data-page="home">Overview</button>
+        <button class="scroll-menu-item" data-page="search">Search Stock</button>
+        <button class="scroll-menu-item" data-page="order">Preview Order</button>
+        <button class="scroll-menu-item" data-page="history">History</button>
+      </div>
+    </section>
+
+    <div class="page-container">
+      <div class="page-heading">
+        <div>
+          <h2 id="pageTitle">Overview</h2>
+          <p id="pageSubtitle">Track your investment and search stocks after Kite login.</p>
+        </div>
+
+        <div class="header-actions">
+          <button class="secondary-button" id="searchButton">Search Stock</button>
+          <button class="secondary-button" id="refreshButton">Refresh</button>
+        </div>
+      </div>
+
+      <div id="pageContent">
+        <div class="cards-grid">
+          <div class="stat-card">
+            <div class="stat-top">
+              <span>Total Invested</span>
+              <div class="stat-icon">₹</div>
+            </div>
+            <div class="stat-value">₹0</div>
+            <div class="stat-change">No orders yet</div>
+          </div>
+
+          <div class="stat-card green">
+            <div class="stat-top">
+              <span>Current Value</span>
+              <div class="stat-icon">▲</div>
+            </div>
+            <div class="stat-value">₹0</div>
+            <div class="stat-change">Waiting for trades</div>
+          </div>
+
+          <div class="stat-card red">
+            <div class="stat-top">
+              <span>Profit / Loss</span>
+              <div class="stat-icon">↕</div>
+            </div>
+            <div class="stat-value">₹0</div>
+            <div class="stat-change">Paper mode active</div>
+          </div>
+
+          <div class="stat-card">
+            <div class="stat-top">
+              <span>Active Strategy</span>
+              <div class="stat-icon">⚙</div>
+            </div>
+            <div class="stat-value">—</div>
+            <div class="stat-change">Not selected</div>
+          </div>
+        </div>
+
+        <div class="dashboard-grid">
+          <div class="card card-padding">
+            <div class="card-header">
+              <div>
+                <h3>Quick Stock Search</h3>
+                <p>Search after Kite is connected.</p>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label for="stockSearch">Search stock</label>
+              <input
+                type="text"
+                id="stockSearch"
+                placeholder="Type symbol or company name"
+                autocomplete="off"
+              />
+              <div id="searchResults" class="search-results"></div>
+            </div>
+          </div>
+
+          <div class="card card-padding">
+            <div class="card-header">
+              <div>
+                <h3>Kite Status</h3>
+                <p>Authentication and account details.</p>
+              </div>
+            </div>
+
+            <div class="info-box" id="statusBox">
+              Kite connection not checked yet.
+            </div>
+
+            <div style="margin-top: 14px; display: grid; gap: 10px;">
+              <a class="primary-button" href="/kite/login">Connect Kite</a>
+              <button class="secondary-button" id="logoutButton2">Logout</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="bottom-content-grid">
+          <div class="card card-padding">
+            <div class="card-header">
+              <div>
+                <h3>Order Preview</h3>
+                <p>Select a stock to preview the order.</p>
+              </div>
+            </div>
+
+            <div class="preview-box" id="previewBox">
+              <div class="preview-row"><span>Stock</span><strong>—</strong></div>
+              <div class="preview-row"><span>Quantity</span><strong>—</strong></div>
+              <div class="preview-row"><span>Price</span><strong>—</strong></div>
+              <div class="preview-row"><span>Status</span><strong>Waiting for selection</strong></div>
+            </div>
+          </div>
+
+          <div class="card card-padding">
+            <div class="card-header">
+              <div>
+                <h3>Recent Activity</h3>
+                <p>Order and search actions.</p>
+              </div>
+            </div>
+
+            <div class="activity-list" id="activityList">
+              <div class="activity-row">
+                <div>
+                  <strong>No activity yet</strong>
+                  <small>Search a stock to begin</small>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <div class="bottom-navigation">
+    <button class="bottom-link active" data-page="home">
+      <span>🏠</span><small>Home</small>
+    </button>
+    <button class="bottom-link" data-page="search">
+      <span>🔎</span><small>Search</small>
+    </button>
+    <button class="bottom-link" data-page="order">
+      <span>🧾</span><small>Order</small>
+    </button>
+    <button class="bottom-link" data-page="history">
+      <span>📊</span><small>History</small>
+    </button>
+  </div>
+
+  <script src="/app.js"></script>
 </body>
 </html>
