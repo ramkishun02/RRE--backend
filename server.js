@@ -3,10 +3,10 @@ const path = require("path");
 const express = require("express");
 const crypto = require("crypto");
 const { Pool } = require("pg");
-///const path = require("path");
+
 const app = express();
 
-const PORT = Number(process.env.PORT || 10000);
+//const PORT = Number(process.env.PORT || 10000);
 
 const KITE_API_KEY = process.env.KITE_API_KEY;
 const KITE_API_SECRET = process.env.KITE_API_SECRET;
