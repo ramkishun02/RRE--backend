@@ -1281,7 +1281,68 @@ function renderStockSearchResults(searchText) {
     </div>
   `;
 }
+//new functction
+const stockSearch = document.getElementById("stockSearch");
+const searchResults = document.getElementById("searchResults");
 
+if (stockSearch && searchResults) {
+  stockSearch.addEventListener("input", async () => {
+    const query = stockSearch.value.trim();
+
+    if (!query) {
+      searchResults.innerHTML = "";
+      return;
+    }
+
+    try {
+      const response = await fetch(
+        `/api/stocks/search?q=${encodeURIComponent(query)}`
+      );
+
+      if (response.status === 401) {
+        searchResults.innerHTML =
+          `<div class="search-item">Please connect Kite first</div>`;
+        return;
+      }
+
+      const data = await response.json();
+
+      if (!data.length) {
+        searchResults.innerHTML =
+          `<div class="search-item">No stock found</div>`;
+        return;
+      }
+
+      searchResults.innerHTML = data
+        .map(
+          (stock) => `
+            <button class="search-item" data-symbol="${stock.symbol}">
+              <strong>${stock.symbol}</strong>
+              <span>${stock.name}</span>
+              <small>${stock.exchange} · ₹${stock.price}</small>
+            </button>
+          `
+        )
+        .join("");
+    } catch (error) {
+      console.error(error);
+      searchResults.innerHTML =
+        `<div class="search-item">Search failed</div>`;
+    }
+  });
+
+  searchResults.addEventListener("click", (event) => {
+    const item = event.target.closest("[data-symbol]");
+    if (!item) return;
+
+    const symbol = item.dataset.symbol;
+    stockSearch.value = symbol;
+    searchResults.innerHTML = "";
+
+    console.log("Selected:", symbol);
+  });
+}
+//
 function bindDynamicEvents() {
   const stockSearch = document.getElementById("stockSearch");
 
