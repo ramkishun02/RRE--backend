@@ -285,7 +285,7 @@ app.get("/", async (req, res) => {
           <a class="button" href="/health">Health Check</a>
           <a class="button" href="/status">Status</a>
           <a class="button" href="/kite/login">Connect Kite</a>
-          <a class="button" href="/index">Dashboard</a>
+          <a class="button" href="/Dashboard">Dashboard</a>
         `
       )
     );
@@ -784,8 +784,7 @@ async function startServer() {
     process.exit(1);
   }
 }
-//const express = require("express");
-//const app = express();
+
 
 app.get("/", (req, res) => {
   res.send("Hello");
