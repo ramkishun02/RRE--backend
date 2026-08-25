@@ -3,7 +3,7 @@ const path = require("path");
 const express = require("express");
 const crypto = require("crypto");
 const { Pool } = require("pg");
-
+const path = require("path");
 const app = express();
 
 const PORT = Number(process.env.PORT || 10000);
@@ -230,8 +230,13 @@ function getKiteLoginUrl() {
 }
 
 // --------------------------------------------------
-// HOME PAGE
+// HOME PAGE 235 to 239 new line
 // --------------------------------------------------
+app.use(express.static(__dirname));
+
+app.get("/", (req, res) => {
+  res.sendFile(path.join(__dirname, "index.html"));
+});
 
 app.get("/", async (req, res) => {
   try {
@@ -784,13 +789,17 @@ async function startServer() {
     process.exit(1);
   }
 }
+const PORT = process.env.PORT || 5000;
 
-
-app.get("/", (req, res) => {
-  res.send("Hello");
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
 });
+
+/*app.get("/", (req, res) => {
+   res.send("Hello");
+ });
 
 app.listen(5000, () => {
-  console.log("Server started at http://localhost:5000");
-});
+   console.log("Server started at http://localhost:5000");
+});*/
 startServer();
