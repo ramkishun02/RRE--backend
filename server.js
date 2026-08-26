@@ -9,15 +9,56 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 const KITE_API_KEY = process.env.KITE_API_KEY;
 const KITE_API_SECRET = process.env.KITE_API_SECRET;
-const PAPER_MODE = String(process.env.PAPER_MODE || "true") === "true";
 
 let kiteSession = {
   accessToken: null,
   userId: null,
+  userName: null,
 };
+
+const stocks = [
+  {
+    symbol: "INFY",
+    name: "Infosys Limited",
+    exchange: "NSE",
+    price: 1520,
+  },
+  {
+    symbol: "TCS",
+    name: "Tata Consultancy Services",
+    exchange: "NSE",
+    price: 3420,
+  },
+  {
+    symbol: "RELIANCE",
+    name: "Reliance Industries",
+    exchange: "NSE",
+    price: 2880,
+  },
+  {
+    symbol: "ITC",
+    name: "ITC Limited",
+    exchange: "NSE",
+    price: 470,
+  },
+  {
+    symbol: "HDFCBANK",
+    name: "HDFC Bank Limited",
+    exchange: "NSE",
+    price: 1710,
+  },
+  {
+    symbol: "SBIN",
+    name: "State Bank of India",
+    exchange: "NSE",
+    price: 820,
+  },
+];
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Serve index.html, style.css, and app.js
 app.use(express.static(__dirname));
 
 app.get("/", (req, res) => {
@@ -25,40 +66,41 @@ app.get("/", (req, res) => {
 });
 
 app.get("/dashboard", (req, res) => {
-  res.set("Cache-Control", "no-store");
   res.sendFile(path.join(__dirname, "index.html"));
 });
 
-app.get("/api/auth/status", (req, res) => {
+// Basic health check
+app.get("/health", (req, res) => {
   res.json({
-    connected: Boolean(kiteSession.accessToken),
-    userId: kiteSession.userId,
-    paperMode: PAPER_MODE,
+    ok: true,
+    message: "Server is running",
   });
 });
 
+// Start Kite login
 app.get("/kite/login", (req, res) => {
   if (!KITE_API_KEY) {
     return res.status(500).send("KITE_API_KEY is missing");
   }
 
-  const loginUrl = `https://kite.zerodha.com/connect/login?v=3&api_key=${encodeURIComponent(
-    KITE_API_KEY
-  )}`;
+  const loginUrl =
+    `https://kite.zerodha.com/connect/login?v=3&api_key=` +
+    encodeURIComponent(KITE_API_KEY);
 
-  return res.redirect(loginUrl);
+  res.redirect(loginUrl);
 });
 
+// Kite callback
 app.get("/kite/callback", async (req, res) => {
   try {
     const { request_token, status } = req.query;
 
     if (status !== "success" || !request_token) {
-      return res.status(400).send("Kite login failed");
+      return res.status(400).send("Kite login was not completed");
     }
 
     if (!KITE_API_KEY || !KITE_API_SECRET) {
-      return res.status(500).send("Kite credentials missing");
+      return res.status(500).send("Kite credentials are missing");
     }
 
     const checksum = crypto
@@ -79,110 +121,218 @@ app.get("/kite/callback", async (req, res) => {
       }),
     });
 
-    const data = await response.json();
+    const result = await response.json();
 
-    if (!response.ok || !data.data || !data.data.access_token) {
-      console.error("Kite token exchange failed:", data);
+    if (!response.ok || !result.data?.access_token) {
+      console.error("Kite token error:", result);
       return res.status(502).send("Could not create Kite session");
     }
 
-    kiteSession.accessToken = data.data.access_token;
-    kiteSession.userId = data.data.user_id || null;
+    kiteSession.accessToken = result.data.access_token;
+    kiteSession.userId = result.data.user_id || null;
+    kiteSession.userName = result.data.user_name || null;
 
-    return res.redirect("/dashboard");
+    res.redirect("/?login=success");
   } catch (error) {
     console.error("Kite callback error:", error);
-    return res.status(500).send("Kite authentication error");
+    res.status(500).send("Kite authentication failed");
   }
 });
 
-app.get("/api/stocks/search", (req, res) => {
+// Check whether Kite session is active
+app.get("/api/auth/status", async (req, res) => {
   if (!kiteSession.accessToken) {
-    return res.status(401).json({ error: "Kite not connected" });
+    return res.json({
+      connected: false,
+      message: "Kite is not connected",
+    });
   }
 
-  const q = String(req.query.q || "").trim().toUpperCase();
+  try {
+    const response = await fetch("https://api.kite.trade/user/profile", {
+      method: "GET",
+      headers: {
+        "X-Kite-Version": "3",
+        Authorization: `token ${KITE_API_KEY}:${kiteSession.accessToken}`,
+      },
+    });
 
-  if (!q) {
+    const result = await response.json();
+
+    if (!response.ok || !result.data) {
+      kiteSession = {
+        accessToken: null,
+        userId: null,
+        userName: null,
+      };
+
+      return res.status(401).json({
+        connected: false,
+        message: "Kite session expired",
+      });
+    }
+
+    kiteSession.userId = result.data.user_id || kiteSession.userId;
+    kiteSession.userName = result.data.user_name || kiteSession.userName;
+
+    res.json({
+      connected: true,
+      userId: kiteSession.userId,
+      userName: kiteSession.userName,
+      email: result.data.email || "",
+      message: "Kite session is active",
+    });
+  } catch (error) {
+    console.error("Kite status error:", error);
+
+    res.status(500).json({
+      connected: false,
+      message: "Could not check Kite session",
+    });
+  }
+});
+
+// Logout
+app.post("/api/auth/logout", async (req, res) => {
+  try {
+    if (kiteSession.accessToken && KITE_API_KEY) {
+      await fetch(
+        `https://api.kite.trade/session/token?api_key=${encodeURIComponent(
+          KITE_API_KEY
+        )}`,
+        {
+          method: "DELETE",
+          headers: {
+            "X-Kite-Version": "3",
+            Authorization: `token ${KITE_API_KEY}:${kiteSession.accessToken}`,
+          },
+        }
+      );
+    }
+  } catch (error) {
+    console.error("Kite logout error:", error);
+  }
+
+  kiteSession = {
+    accessToken: null,
+    userId: null,
+    userName: null,
+  };
+
+  res.json({
+    success: true,
+    message: "Logged out",
+  });
+});
+
+// Stock search
+app.get("/api/stocks/search", (req, res) => {
+  if (!kiteSession.accessToken) {
+    return res.status(401).json({
+      error: "Please connect Kite first",
+    });
+  }
+
+  const query = String(req.query.q || "").trim().toUpperCase();
+
+  if (!query) {
     return res.json([]);
   }
 
-  const stocks = [
-    { symbol: "INFY", name: "Infosys Limited", exchange: "NSE", price: 1520 },
-    { symbol: "TCS", name: "Tata Consultancy Services", exchange: "NSE", price: 3420 },
-    { symbol: "RELIANCE", name: "Reliance Industries", exchange: "NSE", price: 2880 },
-    { symbol: "ITC", name: "ITC Limited", exchange: "NSE", price: 470 },
-    { symbol: "HDFCBANK", name: "HDFC Bank", exchange: "NSE", price: 1710 },
-    { symbol: "SBIN", name: "State Bank of India", exchange: "NSE", price: 820 },
-  ];
-
   const results = stocks.filter((stock) => {
-    const text = `${stock.symbol} ${stock.name} ${stock.exchange}`.toUpperCase();
-    return text.includes(q);
+    const searchableText =
+      `${stock.symbol} ${stock.name} ${stock.exchange}`.toUpperCase();
+
+    return searchableText.includes(query);
   });
 
-  return res.json(results);
+  res.json(results);
 });
 
+// Dashboard data
+app.get("/api/dashboard", (req, res) => {
+  res.json({
+    totalInvested: 0,
+    currentValue: 0,
+    profitLoss: 0,
+    activeStrategy: null,
+    recentActivity: [],
+  });
+});
+
+// Paper order preview
 app.post("/api/orders/preview", (req, res) => {
+  if (!kiteSession.accessToken) {
+    return res.status(401).json({
+      error: "Please connect Kite first",
+    });
+  }
+
   const {
     symbol,
     exchange = "NSE",
     quantity,
     price,
-    targetPercentage = 8,
   } = req.body;
 
-  if (!symbol || !Number.isInteger(Number(quantity)) || Number(quantity) <= 0) {
-    return res.status(400).json({ error: "Invalid order data" });
-  }
-
-  const entryPrice = Number(price || 0);
-  const tp = Number(targetPercentage) / 100;
-
-  return res.json({
-    symbol,
-    exchange,
-    quantity: Number(quantity),
-    purchasePrice: entryPrice,
-    stopLoss: entryPrice,
-    targetPrice: Number((entryPrice * (1 + tp)).toFixed(2)),
-    targetPercentage: Number(targetPercentage),
-    mode: PAPER_MODE ? "PAPER" : "LIVE",
-  });
-});
-
-app.post("/api/orders/confirm", (req, res) => {
-  const { symbol, quantity, price } = req.body;
-
-  if (!symbol || !quantity) {
-    return res.status(400).json({ error: "Invalid order" });
-  }
-
-  if (PAPER_MODE) {
-    return res.json({
-      mode: "PAPER",
-      status: "COMPLETE",
-      order_id: `PAPER-${Date.now()}`,
-      symbol,
-      quantity,
-      price: Number(price || 0),
+  if (!symbol || !quantity || Number(quantity) <= 0) {
+    return res.status(400).json({
+      error: "Symbol and valid quantity are required",
     });
   }
 
-  if (!kiteSession.accessToken) {
-    return res.status(401).json({ error: "Kite not connected" });
-  }
+  const orderPrice = Number(price || 0);
+  const qty = Number(quantity);
 
-  return res.json({
-    mode: "LIVE",
-    status: "NOT_IMPLEMENTED_YET",
-    message: "Live order integration will be added next",
+  res.json({
+    symbol: String(symbol).toUpperCase(),
+    exchange,
+    quantity: qty,
+    price: orderPrice,
+    total: Number((qty * orderPrice).toFixed(2)),
+    mode: "PAPER",
+    message: "Order preview created",
   });
 });
 
+// Paper order confirmation
+app.post("/api/orders/confirm", (req, res) => {
+  if (!kiteSession.accessToken) {
+    return res.status(401).json({
+      error: "Please connect Kite first",
+    });
+  }
+
+  const {
+    symbol,
+    exchange = "NSE",
+    quantity,
+    price,
+  } = req.body;
+
+  if (!symbol || !quantity || Number(quantity) <= 0) {
+    return res.status(400).json({
+      error: "Symbol and valid quantity are required",
+    });
+  }
+
+  res.json({
+    success: true,
+    mode: "PAPER",
+    orderId: `PAPER-${Date.now()}`,
+    symbol: String(symbol).toUpperCase(),
+    exchange,
+    quantity: Number(quantity),
+    price: Number(price || 0),
+    status: "COMPLETE",
+  });
+});
+
+// Unknown route
 app.use((req, res) => {
-  res.status(404).send("Not found");
+  res.status(404).json({
+    error: "Route not found",
+  });
 });
 
 app.listen(PORT, () => {
