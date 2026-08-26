@@ -1325,10 +1325,19 @@ textarea {
   display: grid;
   gap: 8px;
 }
-
+.stock-search-card {
+  width: calc(100% - 24px);
+  max-width: 620px;
+  margin: 12px auto 20px;
+  padding: 16px;
+  border: 1px solid #263653;
+  border-radius: 15px;
+  background: #111b2e;
+  color: #ffffff;
+}
 .search-item {
   width: 100%;
-  padding: 12px;
+  padding: 10px;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--card-light);
@@ -1338,7 +1347,7 @@ textarea {
 
 .search-item strong {
   display: block;
-  margin-bottom: 4px;
+  margin-bottom: 8px;
 }
 
 .search-item span,
