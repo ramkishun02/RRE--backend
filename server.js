@@ -306,8 +306,7 @@ const server = http.createServer((req, res) => {
           });
         }
 
-        const lines = String(data).split("
-");
+        const lines = String(data).split("");
         const headings = lines.shift().split(",");
 
         const symbolIndex =
