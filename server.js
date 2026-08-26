@@ -157,8 +157,7 @@ app.get("/api/stocks/search", requireKiteLogin, async (req, res) => {
       }
     );
 
-    const lines = response.data.split("
-");
+const lines = response.data.split("");
     const headings = lines.shift().split(",");
     const symbolIndex = headings.indexOf("tradingsymbol");
     const nameIndex = headings.indexOf("name");
