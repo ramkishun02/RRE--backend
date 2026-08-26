@@ -1,340 +1,261 @@
-"use strict";
+require("dotenv").config();
 
 const express = require("express");
 const path = require("path");
 const crypto = require("crypto");
+const session = require("express-session");
+const axios = require("axios");
 
 const app = express();
-
 const PORT = process.env.PORT || 5000;
+
 const KITE_API_KEY = process.env.KITE_API_KEY;
 const KITE_API_SECRET = process.env.KITE_API_SECRET;
+const KITE_REDIRECT_URL = process.env.KITE_REDIRECT_URL;
 
-let kiteSession = {
-  accessToken: null,
-  userId: null,
-  userName: null,
-};
-
-const stocks = [
-  {
-    symbol: "INFY",
-    name: "Infosys Limited",
-    exchange: "NSE",
-    price: 1520,
-  },
-  {
-    symbol: "TCS",
-    name: "Tata Consultancy Services",
-    exchange: "NSE",
-    price: 3420,
-  },
-  {
-    symbol: "RELIANCE",
-    name: "Reliance Industries",
-    exchange: "NSE",
-    price: 2880,
-  },
-  {
-    symbol: "ITC",
-    name: "ITC Limited",
-    exchange: "NSE",
-    price: 470,
-  },
-  {
-    symbol: "HDFCBANK",
-    name: "HDFC Bank Limited",
-    exchange: "NSE",
-    price: 1710,
-  },
-  {
-    symbol: "SBIN",
-    name: "State Bank of India",
-    exchange: "NSE",
-    price: 820,
-  },
-];
+if (!KITE_API_KEY || !KITE_API_SECRET || !KITE_REDIRECT_URL) {
+  console.error("Missing Kite settings in .env");
+  process.exit(1);
+}
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Serve index.html, style.css, and app.js
+app.use(
+  session({
+    secret: process.env.SESSION_SECRET || "development-secret",
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      httpOnly: true,
+      secure: false,
+      sameSite: "lax"
+    }
+  })
+);
+
 app.use(express.static(__dirname));
 
+function kiteHeaders(req) {
+  if (!req.session.accessToken) {
+    return null;
+  }
+
+  return {
+    Authorization: `token ${KITE_API_KEY}:${req.session.accessToken}`,
+    "X-Kite-Version": "3"
+  };
+}
+
+function requireKiteLogin(req, res, next) {
+  if (!req.session.accessToken) {
+    return res.status(401).json({
+      error: "Kite authentication required"
+    });
+  }
+
+  next();
+}
+
+/*
+  Main page
+*/
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
 });
 
-app.get("/dashboard", (req, res) => {
-  res.sendFile(path.join(__dirname, "index.html"));
-});
-
-// Basic health check
-app.get("/health", (req, res) => {
-  res.json({
-    ok: true,
-    message: "Server is running",
-  });
-});
-
-// Start Kite login
-app.get("/kite/login", (req, res) => {
-  if (!KITE_API_KEY) {
-    return res.status(500).send("KITE_API_KEY is missing");
-  }
-
+/*
+  Start Kite login
+*/
+app.get("/auth/kite/login", (req, res) => {
   const loginUrl =
-    `https://kite.zerodha.com/connect/login?v=3&api_key=` +
-    encodeURIComponent(KITE_API_KEY);
+    `https://kite.zerodha.com/connect/login?v=3` +
+    `&api_key=${encodeURIComponent(KITE_API_KEY)}`;
 
   res.redirect(loginUrl);
 });
 
-// Kite callback
-app.get("/kite/callback", async (req, res) => {
+/*
+  Kite redirects here after login
+*/
+app.get("/auth/kite/callback", async (req, res) => {
+  const { request_token, status } = req.query;
+
+  if (status !== "success" || !request_token) {
+    return res.status(400).send("Kite login was not completed.");
+  }
+
   try {
-    const { request_token, status } = req.query;
-
-    if (status !== "success" || !request_token) {
-      return res.status(400).send("Kite login was not completed");
-    }
-
-    if (!KITE_API_KEY || !KITE_API_SECRET) {
-      return res.status(500).send("Kite credentials are missing");
-    }
-
     const checksum = crypto
       .createHash("sha256")
-      .update(`${KITE_API_KEY}${request_token}${KITE_API_SECRET}`)
+      .update(KITE_API_KEY + request_token + KITE_API_SECRET)
       .digest("hex");
 
-    const response = await fetch("https://api.kite.trade/session/token", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "X-Kite-Version": "3",
-      },
-      body: new URLSearchParams({
+    const response = await axios.post(
+      "https://api.kite.trade/session/token",
+      new URLSearchParams({
         api_key: KITE_API_KEY,
         request_token,
-        checksum,
-      }),
-    });
-
-    const result = await response.json();
-
-    if (!response.ok || !result.data?.access_token) {
-      console.error("Kite token error:", result);
-      return res.status(502).send("Could not create Kite session");
-    }
-
-    kiteSession.accessToken = result.data.access_token;
-    kiteSession.userId = result.data.user_id || null;
-    kiteSession.userName = result.data.user_name || null;
-
-    res.redirect("/?login=success");
-  } catch (error) {
-    console.error("Kite callback error:", error);
-    res.status(500).send("Kite authentication failed");
-  }
-});
-
-// Check whether Kite session is active
-app.get("/api/auth/status", async (req, res) => {
-  if (!kiteSession.accessToken) {
-    return res.json({
-      connected: false,
-      message: "Kite is not connected",
-    });
-  }
-
-  try {
-    const response = await fetch("https://api.kite.trade/user/profile", {
-      method: "GET",
-      headers: {
-        "X-Kite-Version": "3",
-        Authorization: `token ${KITE_API_KEY}:${kiteSession.accessToken}`,
-      },
-    });
-
-    const result = await response.json();
-
-    if (!response.ok || !result.data) {
-      kiteSession = {
-        accessToken: null,
-        userId: null,
-        userName: null,
-      };
-
-      return res.status(401).json({
-        connected: false,
-        message: "Kite session expired",
-      });
-    }
-
-    kiteSession.userId = result.data.user_id || kiteSession.userId;
-    kiteSession.userName = result.data.user_name || kiteSession.userName;
-
-    res.json({
-      connected: true,
-      userId: kiteSession.userId,
-      userName: kiteSession.userName,
-      email: result.data.email || "",
-      message: "Kite session is active",
-    });
-  } catch (error) {
-    console.error("Kite status error:", error);
-
-    res.status(500).json({
-      connected: false,
-      message: "Could not check Kite session",
-    });
-  }
-});
-
-// Logout
-app.post("/api/auth/logout", async (req, res) => {
-  try {
-    if (kiteSession.accessToken && KITE_API_KEY) {
-      await fetch(
-        `https://api.kite.trade/session/token?api_key=${encodeURIComponent(
-          KITE_API_KEY
-        )}`,
-        {
-          method: "DELETE",
-          headers: {
-            "X-Kite-Version": "3",
-            Authorization: `token ${KITE_API_KEY}:${kiteSession.accessToken}`,
-          },
+        checksum
+      }).toString(),
+      {
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "X-Kite-Version": "3"
         }
-      );
-    }
+      }
+    );
+
+    req.session.accessToken = response.data.data.access_token;
+    req.session.user = response.data.data.user_id;
+
+    res.redirect("/?kite=connected");
   } catch (error) {
-    console.error("Kite logout error:", error);
+    const message =
+      error.response?.data?.message || error.message || "Kite login failed";
+
+    console.error("Kite authentication error:", message);
+    res.status(500).send(`Kite authentication failed: ${message}`);
   }
+});
 
-  kiteSession = {
-    accessToken: null,
-    userId: null,
-    userName: null,
-  };
-
+/*
+  Check whether Kite is connected
+*/
+app.get("/api/auth/status", (req, res) => {
   res.json({
-    success: true,
-    message: "Logged out",
+    connected: Boolean(req.session.accessToken),
+    userId: req.session.user || null
   });
 });
 
-// Stock search
-app.get("/api/stocks/search", (req, res) => {
-  if (!kiteSession.accessToken) {
-    return res.status(401).json({
-      error: "Please connect Kite first",
-    });
-  }
+/*
+  Logout
+*/
+app.post("/api/auth/logout", (req, res) => {
+  req.session.destroy(() => {
+    res.json({ success: true });
+  });
+});
 
+/*
+  Search stocks using Kite instruments
+*/
+app.get("/api/stocks/search", requireKiteLogin, async (req, res) => {
   const query = String(req.query.q || "").trim().toUpperCase();
 
   if (!query) {
     return res.json([]);
   }
 
-  const results = stocks.filter((stock) => {
-    const searchableText =
-      `${stock.symbol} ${stock.name} ${stock.exchange}`.toUpperCase();
+  try {
+    const response = await axios.get(
+      "https://api.kite.trade/instruments",
+      {
+        headers: kiteHeaders(req),
+        responseType: "text"
+      }
+    );
 
-    return searchableText.includes(query);
-  });
+    const lines = response.data.split("
+");
+    const headings = lines.shift().split(",");
+    const symbolIndex = headings.indexOf("tradingsymbol");
+    const nameIndex = headings.indexOf("name");
+    const exchangeIndex = headings.indexOf("exchange");
+    const tokenIndex = headings.indexOf("instrument_token");
 
-  res.json(results);
-});
+    const results = [];
 
-// Dashboard data
-app.get("/api/dashboard", (req, res) => {
-  res.json({
-    totalInvested: 0,
-    currentValue: 0,
-    profitLoss: 0,
-    activeStrategy: null,
-    recentActivity: [],
-  });
-});
+    for (const line of lines) {
+      if (!line.trim()) continue;
 
-// Paper order preview
-app.post("/api/orders/preview", (req, res) => {
-  if (!kiteSession.accessToken) {
-    return res.status(401).json({
-      error: "Please connect Kite first",
-    });
+      const columns = line.split(",");
+      const symbol = columns[symbolIndex] || "";
+      const name = columns[nameIndex] || "";
+      const exchange = columns[exchangeIndex] || "";
+
+      if (
+        symbol.toUpperCase().includes(query) ||
+        name.toUpperCase().includes(query)
+      ) {
+        results.push({
+          symbol,
+          name,
+          exchange,
+          instrumentToken: columns[tokenIndex] || null
+        });
+      }
+
+      if (results.length >= 20) break;
+    }
+
+    res.json(results);
+  } catch (error) {
+    const message =
+      error.response?.data?.message || error.message || "Stock search failed";
+
+    console.error("Stock search error:", message);
+    res.status(500).json({ error: message });
   }
+});
 
-  const {
-    symbol,
-    exchange = "NSE",
-    quantity,
-    price,
-  } = req.body;
+/*
+  Get live quote
+  Example:
+  /api/stocks/quote?instrument=NSE:INFY
+*/
+app.get("/api/stocks/quote", requireKiteLogin, async (req, res) => {
+  const instrument = String(req.query.instrument || "").trim();
 
-  if (!symbol || !quantity || Number(quantity) <= 0) {
+  if (!instrument) {
     return res.status(400).json({
-      error: "Symbol and valid quantity are required",
+      error: "instrument is required, for example NSE:INFY"
     });
   }
 
-  const orderPrice = Number(price || 0);
-  const qty = Number(quantity);
+  try {
+    const response = await axios.get(
+      "https://api.kite.trade/quote",
+      {
+        headers: kiteHeaders(req),
+        params: {
+          i: instrument
+        }
+      }
+    );
 
-  res.json({
-    symbol: String(symbol).toUpperCase(),
-    exchange,
-    quantity: qty,
-    price: orderPrice,
-    total: Number((qty * orderPrice).toFixed(2)),
-    mode: "PAPER",
-    message: "Order preview created",
-  });
-});
+    res.json(response.data);
+  } catch (error) {
+    const message =
+      error.response?.data?.message || error.message || "Quote failed";
 
-// Paper order confirmation
-app.post("/api/orders/confirm", (req, res) => {
-  if (!kiteSession.accessToken) {
-    return res.status(401).json({
-      error: "Please connect Kite first",
-    });
+    console.error("Quote error:", message);
+    res.status(500).json({ error: message });
   }
+});
 
-  const {
-    symbol,
-    exchange = "NSE",
-    quantity,
-    price,
-  } = req.body;
+/*
+  Get profile after login
+*/
+app.get("/api/profile", requireKiteLogin, async (req, res) => {
+  try {
+    const response = await axios.get(
+      "https://api.kite.trade/user/profile",
+      {
+        headers: kiteHeaders(req)
+      }
+    );
 
-  if (!symbol || !quantity || Number(quantity) <= 0) {
-    return res.status(400).json({
-      error: "Symbol and valid quantity are required",
-    });
+    res.json(response.data);
+  } catch (error) {
+    const message =
+      error.response?.data?.message || error.message || "Profile request failed";
+
+    res.status(500).json({ error: message });
   }
-
-  res.json({
-    success: true,
-    mode: "PAPER",
-    orderId: `PAPER-${Date.now()}`,
-    symbol: String(symbol).toUpperCase(),
-    exchange,
-    quantity: Number(quantity),
-    price: Number(price || 0),
-    status: "COMPLETE",
-  });
 });
 
-// Unknown route
-app.use((req, res) => {
-  res.status(404).json({
-    error: "Route not found",
-  });
-});
-
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`Server running at http://localhost:${PORT}`);
 });
