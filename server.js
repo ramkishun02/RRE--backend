@@ -609,7 +609,7 @@ async function getInstruments(accessToken) {
   }
 
   const csv = await response.text();
-  const lines = csv.split(/?/);
+  const lines = csv.split(/\r?\n/);
   const headings = parseCsvLine(lines.shift() || "");
 
   const index = {
