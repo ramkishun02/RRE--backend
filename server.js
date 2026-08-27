@@ -23,6 +23,7 @@ const CALLBACK_URL =
 const DASHBOARD_URL =
   process.env.DASHBOARD_URL ||
   `${BASE_URL}/dashboard`;
+const FRONTEND_DIR = path.join(__dirname, "public");
 
 const DATABASE_URL = process.env.DATABASE_URL || "";
 
@@ -47,8 +48,10 @@ app.use(express.urlencoded({ extended: true }));
 /*
   Serve index.html, app.js, style.css and assets.
   Keep these files in the same project directory.
-*/
+
 app.use(express.static(path.join(__dirname, "public")));
+*/
+app.use(express.static(FRONTEND_DIR));
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -228,11 +231,13 @@ async function requireKiteToken(res) {
 
 /*
   Home
-*/
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
-
+*/
+app.get("/", (req, res) => {
+  res.sendFile(path.join(FRONTEND_DIR, "index.html"));
+});
 /*
   Health check
 */
@@ -609,7 +614,9 @@ async function getInstruments(accessToken) {
   }
 
   const csv = await response.text();
-  const lines = csv.split(/\r?\n/);
+  const lines = csv.split(/
+?
+/);
   const headings = parseCsvLine(lines.shift() || "");
 
   const index = {
