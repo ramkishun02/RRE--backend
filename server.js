@@ -1,787 +1,403 @@
 "use strict";
 
-const path = require("path");
-const crypto = require("crypto");
-const express = require("express");
-const { Pool } = require("pg");
+const http = require("node:http");
+const https = require("node:https");
+const fs = require("node:fs");
+const path = require("node:path");
+const crypto = require("node:crypto");
+const { URL } = require("node:url");
 
-const app = express();
-
-const PORT = Number(process.env.PORT || 10000);
-
-const KITE_API_KEY = process.env.KITE_API_KEY || "";
-const KITE_API_SECRET = process.env.KITE_API_SECRET || "";
-
-const BASE_URL =
-  process.env.BASE_URL ||
-  "https://rre-backend-1.onrender.com";
-
-const CALLBACK_URL =
-  process.env.KITE_REDIRECT_URL ||
-  `${BASE_URL}/kite/callback`;
-
-const DASHBOARD_URL =
-  process.env.DASHBOARD_URL ||
-  `${BASE_URL}/dashboard`;
-const FRONTEND_DIR = path.join(__dirname, "public");
-
-const DATABASE_URL = process.env.DATABASE_URL || "";
-
-let db = null;
-
-if (DATABASE_URL) {
-  db = new Pool({
-    connectionString: DATABASE_URL,
-    ssl: {
-      rejectUnauthorized: false
-    }
-  });
-
-  db.on("error", (error) => {
-    console.error("PostgreSQL pool error:", error.message);
-  });
-}
-
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+const PORT = 5000;
+const HOST = "0.0.0.0";
+const ROOT = __dirname;
 
 /*
-  Serve index.html, app.js, style.css and assets.
-  Keep these files in the same project directory.
-
-app.use(express.static(path.join(__dirname, "public")));
+  Put your real values here temporarily.
+  Do not share this file publicly after adding your secret.
 */
-app.use(express.static(FRONTEND_DIR));
-
-function escapeHtml(value) {
-  return String(value ?? "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
-}
-
-function page(title, message, link = "/") {
-  return `<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>${escapeHtml(title)}</title>
-  <style>
-    body {
-      font-family: Arial, sans-serif;
-      max-width: 700px;
-      margin: 40px auto;
-      padding: 20px;
-      line-height: 1.5;
-    }
-    a {
-      display: inline-block;
-      margin-top: 20px;
-    }
-    pre {
-      white-space: pre-wrap;
-      background: #f3f3f3;
-      padding: 12px;
-      border-radius: 8px;
-    }
-  </style>
-</head>
-<body>
-  <h1>${escapeHtml(title)}</h1>
-  <p>${escapeHtml(message)}</p>
-  <a href="${escapeHtml(link)}">Return to application</a>
-</body>
-</html>`;
-}
-
-function checksum(apiKey, requestToken, apiSecret) {
-  return crypto
-    .createHash("sha256")
-    .update(apiKey + requestToken + apiSecret)
-    .digest("hex");
-}
-
-function kiteHeaders(accessToken) {
-  return {
-    "X-Kite-Version": "3",
-    Authorization: `token ${KITE_API_KEY}:${accessToken}`
-  };
-}
-
-async function kiteFetch(url, options = {}) {
-  const response = await fetch(url, options);
-
-  let data;
-
-  try {
-    data = await response.json();
-  } catch {
-    data = {
-      status: "error",
-      message: await response.text()
-    };
-  }
-
-  return {
-    response,
-    data
-  };
-}
+const KITE_API_KEY = "YOUR_KITE_API_KEY";
+const KITE_API_SECRET = "YOUR_KITE_API_SECRET";
+const KITE_REDIRECT_URL =
+  "http://localhost:5000/auth/kite/callback";
 
 /*
-  Token storage
+  Temporary in-memory session.
+  For one-user local testing, this is enough.
 */
-async function ensureTokenTable() {
-  if (!db) return;
+let accessToken = "";
+let userId = "";
 
-  await db.query(`
-    CREATE TABLE IF NOT EXISTS kite_tokens (
-      id INTEGER PRIMARY KEY,
-      access_token TEXT NOT NULL,
-      user_id TEXT,
-      login_time TEXT,
-      updated_at TIMESTAMPTZ DEFAULT NOW()
-    )
-  `);
+const MIME_TYPES = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "application/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".svg": "image/svg+xml",
+  ".ico": "image/x-icon"
+};
+
+function sendJson(res, statusCode, data) {
+  res.writeHead(statusCode, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "Content-Type"
+  });
+
+  res.end(JSON.stringify(data));
 }
 
-async function saveKiteToken(accessToken, userId, loginTime) {
-  if (!db) {
-    throw new Error("DATABASE_URL is not configured.");
+function redirect(res, location) {
+  res.writeHead(302, { Location: location });
+  res.end();
+}
+
+function kiteRequest(method, requestPath, body, callback) {
+  const postData = body
+    ? new URLSearchParams(body).toString()
+    : null;
+
+  const options = {
+    hostname: "api.kite.trade",
+    path: requestPath,
+    method,
+    headers: {
+      "X-Kite-Version": "3"
+    }
+  };
+
+  if (accessToken) {
+    options.headers.Authorization =
+      `token ${KITE_API_KEY}:${accessToken}`;
   }
 
-  await db.query(
-    `
-    INSERT INTO kite_tokens
-      (id, access_token, user_id, login_time, updated_at)
-    VALUES
-      (1, $1, $2, $3, NOW())
-    ON CONFLICT (id)
-    DO UPDATE SET
-      access_token = EXCLUDED.access_token,
-      user_id = EXCLUDED.user_id,
-      login_time = EXCLUDED.login_time,
-      updated_at = NOW()
-    `,
-    [accessToken, userId || null, loginTime || null]
+  if (postData) {
+    options.headers["Content-Type"] =
+      "application/x-www-form-urlencoded";
+    options.headers["Content-Length"] =
+      Buffer.byteLength(postData);
+  }
+
+  const request = https.request(options, (response) => {
+    let responseBody = "";
+
+    response.on("data", (chunk) => {
+      responseBody += chunk;
+    });
+
+    response.on("end", () => {
+      let data;
+
+      try {
+        data = JSON.parse(responseBody);
+      } catch {
+        data = responseBody;
+      }
+
+      callback(null, response.statusCode, data);
+    });
+  });
+
+  request.on("error", (error) => {
+    callback(error);
+  });
+
+  if (postData) {
+    request.write(postData);
+  }
+
+  request.end();
+}
+
+function serveStaticFile(req, res) {
+  let pathname = new URL(req.url, "http://localhost").pathname;
+
+  if (pathname === "/") {
+    pathname = "/index.html";
+  }
+
+  const safePath = path.normalize(pathname).replace(/^(..[/\\])+/, "");
+  const filePath = path.join(ROOT, safePath);
+
+  if (!filePath.startsWith(ROOT)) {
+    return sendJson(res, 403, { error: "Forbidden" });
+  }
+
+  fs.readFile(filePath, (error, file) => {
+    if (error) {
+      if (error.code === "ENOENT") {
+        return sendJson(res, 404, { error: "File not found" });
+      }
+
+      console.error(error);
+      return sendJson(res, 500, { error: "Cannot read file" });
+    }
+
+    const extension = path.extname(filePath).toLowerCase();
+
+    res.writeHead(200, {
+      "Content-Type":
+        MIME_TYPES[extension] || "application/octet-stream"
+    });
+
+    res.end(file);
+  });
+}
+
+const server = http.createServer((req, res) => {
+  const requestUrl = new URL(
+    req.url,
+    `http://${req.headers.host || "localhost"}`
   );
-}
 
-async function getKiteToken() {
-  if (!db) return null;
+  const pathname = requestUrl.pathname;
 
-  const result = await db.query(`
-    SELECT access_token, user_id, login_time
-    FROM kite_tokens
-    WHERE id = 1
-    LIMIT 1
-  `);
-
-  return result.rows[0] || null;
-}
-
-async function deleteKiteToken() {
-  if (!db) return;
-
-  await db.query(`
-    DELETE FROM kite_tokens
-    WHERE id = 1
-  `);
-}
-
-async function requireKiteToken(res) {
-  if (!KITE_API_KEY) {
-    res.status(500).json({
-      success: false,
-      error: "KITE_API_KEY_NOT_CONFIGURED",
-      message: "KITE_API_KEY is missing."
+  if (req.method === "OPTIONS") {
+    res.writeHead(204, {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type"
     });
 
-    return null;
+    return res.end();
   }
 
-  if (!db) {
-    res.status(500).json({
-      success: false,
-      error: "DATABASE_NOT_CONFIGURED",
-      message: "DATABASE_URL is missing."
-    });
+  /*
+    Start Kite login
+  */
+  if (req.method === "GET" && pathname === "/auth/kite/login") {
+    const loginUrl =
+      "https://kite.zerodha.com/connect/login?v=3" +
+      `&api_key=${encodeURIComponent(KITE_API_KEY)}`;
 
-    return null;
+    return redirect(res, loginUrl);
   }
 
-  const token = await getKiteToken();
-
-  if (!token || !token.access_token) {
-    res.status(401).json({
-      success: false,
-      error: "KITE_LOGIN_REQUIRED",
-      message: "Connect Kite before using this feature.",
-      loginUrl: "/kite/login"
-    });
-
-    return null;
-  }
-
-  return token.access_token;
-}
-
-/*
-  Home
-app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "index.html"));
-});
-*/
-app.get("/", (req, res) => {
-  res.sendFile(path.join(FRONTEND_DIR, "index.html"));
-});
-/*
-  Health check
-*/
-app.get("/health", async (req, res) => {
-  let databaseReady = false;
-
-  if (db) {
-    try {
-      await db.query("SELECT 1");
-      databaseReady = true;
-    } catch (error) {
-      console.error("Database health error:", error.message);
-    }
-  }
-
-  const token = db ? await getKiteToken() : null;
-
-  res.json({
-    success: true,
-    backend: true,
-    databaseConfigured: Boolean(DATABASE_URL),
-    databaseReady,
-    kiteConfigured: Boolean(KITE_API_KEY && KITE_API_SECRET),
-    accessTokenConfigured: Boolean(token?.access_token),
-    callbackUrl: CALLBACK_URL,
-    dashboardUrl: DASHBOARD_URL,
-    time: new Date().toISOString()
-  });
-});
-
-/*
-  Kite login
-*/
-app.get("/kite/login", (req, res) => {
-  if (!KITE_API_KEY) {
-    return res
-      .status(500)
-      .send(page(
-        "Kite configuration error",
-        "KITE_API_KEY is missing."
-      ));
-  }
-
-  const loginUrl =
-    "https://kite.zerodha.com/connect/login?v=3" +
-    `&api_key=${encodeURIComponent(KITE_API_KEY)}`;
-
-  res.redirect(loginUrl);
-});
-
-/*
-  Kite callback
-*/
-app.get("/kite/callback", async (req, res) => {
-  const requestToken = String(
-    req.query.request_token || ""
-  ).trim();
-
-  const status = String(req.query.status || "");
-
-  if (status !== "success" || !requestToken) {
-    return res
-      .status(400)
-      .send(page(
-        "Kite login was not completed",
-        "Kite did not provide a valid request token."
-      ));
-  }
-
-  if (!KITE_API_KEY || !KITE_API_SECRET) {
-    return res
-      .status(500)
-      .send(page(
-        "Kite configuration error",
-        "KITE_API_KEY or KITE_API_SECRET is missing."
-      ));
-  }
-
-  if (!db) {
-    return res
-      .status(500)
-      .send(page(
-        "Database configuration error",
-        "DATABASE_URL is required to save the Kite access token."
-      ));
-  }
-
-  try {
-    const body = new URLSearchParams({
-      api_key: KITE_API_KEY,
-      request_token: requestToken,
-      checksum: checksum(
-        KITE_API_KEY,
-        requestToken,
-        KITE_API_SECRET
-      )
-    });
-
-    const { response, data } = await kiteFetch(
-      "https://api.kite.trade/session/token",
-      {
-        method: "POST",
-        headers: {
-          "X-Kite-Version": "3",
-          "Content-Type":
-            "application/x-www-form-urlencoded"
-        },
-        body: body.toString()
-      }
-    );
-
-    console.log("Kite token exchange:", {
-      httpStatus: response.status,
-      status: data.status,
-      errorType: data.error_type,
-      message: data.message
-    });
-
-    if (
-      !response.ok ||
-      data.status !== "success" ||
-      !data.data?.access_token
-    ) {
-      return res
-        .status(response.status || 400)
-        .send(page(
-          "Kite authentication failed",
-          data.message ||
-            "The request token could not be exchanged."
-        ));
-    }
-
-    await saveKiteToken(
-      data.data.access_token,
-      data.data.user_id,
-      data.data.login_time
-    );
-
-    console.log(
-      "Kite access token saved for user:",
-      data.data.user_id
-    );
-
-    return res.redirect(DASHBOARD_URL);
-  } catch (error) {
-    console.error("Kite callback error:", error);
-
-    return res
-      .status(500)
-      .send(page(
-        "Kite callback error",
-        error.message
-      ));
-  }
-});
-
-/*
-  Kite connection status
-*/
-app.get("/api/auth/status", async (req, res) => {
-  try {
-    const token = db ? await getKiteToken() : null;
-
-    res.json({
-      success: true,
-      connected: Boolean(token?.access_token),
-      userId: token?.user_id || null,
-      loginTime: token?.login_time || null
-    });
-  } catch (error) {
-    console.error("Status error:", error.message);
-
-    res.status(500).json({
-      success: false,
-      error: "STATUS_ERROR",
-      message: error.message
-    });
-  }
-});
-
-/*
-  Dashboard route
-*/
-app.get("/dashboard", async (req, res) => {
-  try {
-    const token = db ? await getKiteToken() : null;
-
-    if (!token?.access_token) {
-      return res.redirect("/kite/login");
-    }
-
-    return res.sendFile(
-      path.join(__dirname, "public", "index.html")
-    );
-  } catch (error) {
-    console.error("Dashboard error:", error.message);
-
-    return res
-      .status(500)
-      .send(page(
-        "Dashboard error",
-        error.message
-      ));
-  }
-});
-
-/*
-  User profile test
-*/
-app.get("/api/kite/profile", async (req, res) => {
-  try {
-    const accessToken = await requireKiteToken(res);
-
-    if (!accessToken) return;
-
-    const { response, data } = await kiteFetch(
-      "https://api.kite.trade/user/profile",
-      {
-        headers: kiteHeaders(accessToken)
-      }
-    );
-
-    res.status(response.status).json(data);
-  } catch (error) {
-    console.error("Profile error:", error.message);
-
-    res.status(500).json({
-      success: false,
-      error: "PROFILE_REQUEST_FAILED",
-      message: error.message
-    });
-  }
-});
-
-/*
-  Live market quote
-  Example:
-  /api/market/quote?symbol=INFY
-*/
-app.get("/api/market/quote", async (req, res) => {
-  try {
-    const symbol = String(
-      req.query.symbol || ""
-    ).trim().toUpperCase();
-
-    if (!symbol) {
-      return res.status(400).json({
-        success: false,
-        error: "SYMBOL_REQUIRED",
-        message: "Use /api/market/quote?symbol=INFY"
-      });
-    }
-
-    const accessToken = await requireKiteToken(res);
-
-    if (!accessToken) return;
-
-    const instrument = `NSE:${symbol}`;
-
-    const quoteUrl =
-      "https://api.kite.trade/quote/ltp" +
-      `?i=${encodeURIComponent(instrument)}`;
-
-    const { response, data } = await kiteFetch(
-      quoteUrl,
-      {
-        headers: kiteHeaders(accessToken)
-      }
-    );
-
-    if (
-      !response.ok ||
-      data.status !== "success"
-    ) {
-      return res.status(response.status || 500).json({
-        success: false,
-        error: data.error_type || "KITE_QUOTE_ERROR",
-        message: data.message || "Kite quote failed.",
-        kite: data
-      });
-    }
-
-    const quote = data.data?.[instrument];
-
-    if (!quote) {
-      return res.status(404).json({
-        success: false,
-        error: "SYMBOL_NOT_FOUND",
-        message: `${instrument} was not returned by Kite.`
-      });
-    }
-
-    return res.json({
-      success: true,
-      exchange: "NSE",
-      symbol,
-      instrument,
-      last_price: quote.last_price,
-      source: "Kite Connect",
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error("Quote error:", error.message);
-
-    res.status(500).json({
-      success: false,
-      error: "MARKET_DATA_ERROR",
-      message: error.message
-    });
-  }
-});
-
-/*
-  Stock search using Kite's daily instruments CSV.
-  For stability, this caches the file in memory for 24 hours.
-*/
-let instrumentsCache = [];
-let instrumentsCacheTime = 0;
-
-function parseCsvLine(line) {
-  const values = [];
-  let current = "";
-  let quoted = false;
-
-  for (let i = 0; i < line.length; i += 1) {
-    const character = line[i];
-
-    if (character === '"') {
-      if (
-        quoted &&
-        line[i + 1] === '"'
-      ) {
-        current += '"';
-        i += 1;
-      } else {
-        quoted = !quoted;
-      }
-    } else if (
-      character === "," &&
-      !quoted
-    ) {
-      values.push(current);
-      current = "";
-    } else {
-      current += character;
-    }
-  }
-
-  values.push(current);
-  return values;
-}
-
-async function getInstruments(accessToken) {
-  const now = Date.now();
-
+  /*
+    Kite callback after successful login
+  */
   if (
-    instrumentsCache.length &&
-    now - instrumentsCacheTime < 24 * 60 * 60 * 1000
+    req.method === "GET" &&
+    pathname === "/auth/kite/callback"
   ) {
-    return instrumentsCache;
-  }
+    const status = requestUrl.searchParams.get("status");
+    const requestToken =
+      requestUrl.searchParams.get("request_token");
 
-  const response = await fetch(
-    "https://api.kite.trade/instruments",
-    {
-      headers: kiteHeaders(accessToken)
+    if (status !== "success" || !requestToken) {
+      return sendJson(res, 400, {
+        error: "Kite login was not completed"
+      });
     }
-  );
 
-  if (!response.ok) {
-    throw new Error(
-      `Kite instruments request failed: ${response.status}`
+    const checksum = crypto
+      .createHash("sha256")
+      .update(
+        KITE_API_KEY +
+          requestToken +
+          KITE_API_SECRET
+      )
+      .digest("hex");
+
+    return kiteRequest(
+      "POST",
+      "/session/token",
+      {
+        api_key: KITE_API_KEY,
+        request_token: requestToken,
+        checksum
+      },
+      (error, statusCode, data) => {
+        if (error) {
+          console.error(error);
+          return sendJson(res, 500, {
+            error: "Could not connect to Kite"
+          });
+        }
+
+        if (
+          statusCode < 200 ||
+          statusCode >= 300 ||
+          !data.data
+        ) {
+          return sendJson(res, statusCode || 500, {
+            error: data.message || "Kite authentication failed",
+            details: data
+          });
+        }
+
+        accessToken = data.data.access_token;
+        userId = data.data.user_id || "";
+
+        console.log("Kite authentication completed");
+
+        redirect(res, "/?kite=connected");
+      }
     );
   }
 
-  const csv = await response.text();
-  const lines = csv.split(/\r?\n/);
-  const headings = parseCsvLine(lines.shift() || "");
-
-  const index = {
-    token: headings.indexOf("instrument_token"),
-    symbol: headings.indexOf("tradingsymbol"),
-    name: headings.indexOf("name"),
-    exchange: headings.indexOf("exchange"),
-    segment: headings.indexOf("segment")
-  };
-
-  instrumentsCache = lines
-    .filter((line) => line.trim())
-    .map((line) => {
-      const columns = parseCsvLine(line);
-
-      return {
-        instrumentToken: columns[index.token] || "",
-        symbol: columns[index.symbol] || "",
-        name: columns[index.name] || "",
-        exchange: columns[index.exchange] || "",
-        segment: columns[index.segment] || ""
-      };
+  /*
+    Authentication status
+  */
+  if (
+    req.method === "GET" &&
+    pathname === "/api/auth/status"
+  ) {
+    return sendJson(res, 200, {
+      connected: Boolean(accessToken),
+      userId: userId || null
     });
+  }
 
-  instrumentsCacheTime = now;
+  /*
+    Logout
+  */
+  if (
+    req.method === "POST" &&
+    pathname === "/api/auth/logout"
+  ) {
+    accessToken = "";
+    userId = "";
 
-  return instrumentsCache;
-}
+    return sendJson(res, 200, {
+      success: true
+    });
+  }
 
-app.get("/api/stocks/search", async (req, res) => {
-  try {
-    const query = String(
-      req.query.q || ""
+  /*
+    Stock search
+    This version searches Kite instruments directly.
+  */
+  if (
+    req.method === "GET" &&
+    pathname === "/api/stocks/search"
+  ) {
+    if (!accessToken) {
+      return sendJson(res, 401, {
+        error: "Please connect Kite first"
+      });
+    }
+
+    const query = (
+      requestUrl.searchParams.get("q") || ""
     ).trim().toUpperCase();
 
     if (!query) {
-      return res.json({
-        success: true,
-        results: []
+      return sendJson(res, 200, []);
+    }
+
+    return kiteRequest(
+      "GET",
+      "/instruments",
+      null,
+      (error, statusCode, data) => {
+        if (error) {
+          console.error(error);
+          return sendJson(res, 500, {
+            error: "Could not download Kite instruments"
+          });
+        }
+
+        if (statusCode < 200 || statusCode >= 300) {
+          return sendJson(res, statusCode, {
+            error: data.message || "Kite instruments request failed"
+          });
+        }
+
+        const lines = String(data).split("");
+    const headings = lines.shift().split(",");
+
+        const symbolIndex =
+          headings.indexOf("tradingsymbol");
+        const nameIndex = headings.indexOf("name");
+        const exchangeIndex =
+          headings.indexOf("exchange");
+        const tokenIndex =
+          headings.indexOf("instrument_token");
+
+        const results = [];
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+
+          const columns = line.split(",");
+          const symbol = columns[symbolIndex] || "";
+          const name = columns[nameIndex] || "";
+          const exchange = columns[exchangeIndex] || "";
+
+          if (
+            symbol.toUpperCase().includes(query) ||
+            name.toUpperCase().includes(query)
+          ) {
+            results.push({
+              symbol,
+              name,
+              exchange,
+              instrumentToken: columns[tokenIndex] || null
+            });
+          }
+
+          if (results.length >= 20) break;
+        }
+
+        sendJson(res, 200, results);
+      }
+    );
+  }
+
+  /*
+    Quote endpoint
+    Example:
+    /api/stocks/quote?instrument=NSE:INFY
+  */
+  if (
+    req.method === "GET" &&
+    pathname === "/api/stocks/quote"
+  ) {
+    if (!accessToken) {
+      return sendJson(res, 401, {
+        error: "Please connect Kite first"
       });
     }
 
-    const accessToken = await requireKiteToken(res);
+    const instrument =
+      requestUrl.searchParams.get("instrument");
 
-    if (!accessToken) return;
-
-    const instruments = await getInstruments(
-      accessToken
-    );
-
-    const results = instruments
-      .filter((instrument) => {
-        const isNseEquity =
-          instrument.exchange === "NSE" &&
-          instrument.segment === "NSE";
-
-        const symbolMatches =
-          instrument.symbol
-            .toUpperCase()
-            .includes(query);
-
-        const nameMatches =
-          instrument.name
-            .toUpperCase()
-            .includes(query);
-
-        return (
-          isNseEquity &&
-          (symbolMatches || nameMatches)
-        );
-      })
-      .slice(0, 20);
-
-    return res.json({
-      success: true,
-      results
-    });
-  } catch (error) {
-    console.error("Stock search error:", error.message);
-
-    res.status(500).json({
-      success: false,
-      error: "STOCK_SEARCH_FAILED",
-      message: error.message
-    });
-  }
-});
-
-/*
-  Logout and invalidate the Kite token
-*/
-app.post("/api/auth/logout", async (req, res) => {
-  try {
-    const token = db ? await getKiteToken() : null;
-
-    if (
-      token?.access_token &&
-      KITE_API_KEY
-    ) {
-      const logoutUrl =
-        "https://api.kite.trade/session/token" +
-        `?api_key=${encodeURIComponent(KITE_API_KEY)}` +
-        `&access_token=${encodeURIComponent(
-          token.access_token
-        )}`;
-
-      try {
-        await fetch(logoutUrl, {
-          method: "DELETE",
-          headers: {
-            "X-Kite-Version": "3"
-          }
-        });
-      } catch (error) {
-        console.error(
-          "Kite logout request failed:",
-          error.message
-        );
-      }
+    if (!instrument) {
+      return sendJson(res, 400, {
+        error: "Missing instrument, example NSE:INFY"
+      });
     }
 
-    await deleteKiteToken();
-    instrumentsCache = [];
-    instrumentsCacheTime = 0;
+    const kitePath =
+      "/quote?i=" +
+      encodeURIComponent(instrument);
 
-    res.json({
-      success: true,
-      message: "Logged out"
-    });
-  } catch (error) {
-    console.error("Logout error:", error.message);
+    return kiteRequest(
+      "GET",
+      kitePath,
+      null,
+      (error, statusCode, data) => {
+        if (error) {
+          return sendJson(res, 500, {
+            error: "Could not connect to Kite"
+          });
+        }
 
-    res.status(500).json({
-      success: false,
-      error: "LOGOUT_FAILED",
-      message: error.message
-    });
+        sendJson(res, statusCode, data);
+      }
+    );
   }
+
+  /*
+    Serve index.html, app.js, style.css and images
+  */
+  serveStaticFile(req, res);
 });
 
-/*
-  API 404 response
-*/
-app.use("/api", (req, res) => {
-  res.status(404).json({
-    success: false,
-    error: "API_ROUTE_NOT_FOUND",
-    message: `${req.method} ${req.originalUrl} was not found.`
-  });
+server.listen(PORT, HOST, () => {
+  console.log(`Server running on http://localhost:${PORT}`);
+  console.log(`Kite callback: ${KITE_REDIRECT_URL}`);
 });
-
-/*
-  Start exactly once
-*/
-async function start() {
-  try {
-    await ensureTokenTable();
-
-    app.listen(PORT, "0.0.0.0", () => {
-      console.log(`Server running on port ${PORT}`);
-      console.log(`Callback URL: ${CALLBACK_URL}`);
-      console.log(`Dashboard URL: ${DASHBOARD_URL}`);
-    });
-  } catch (error) {
-    console.error("Startup failed:", error);
-    process.exit(1);
-  }
-}
-
-start();
