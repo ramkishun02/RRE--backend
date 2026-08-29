@@ -659,9 +659,7 @@ app.get("/api/stocks/search", async (req, res) => {
       });
     }
 
-    const lines = csv.split(/
-?
-/);
+    const lines = csv.split(/\r?\n/);
     const headings = parseCsvLine(lines.shift() || "");
 
     const symbolIndex =
