@@ -538,7 +538,6 @@ app.get("/dashboard", async (req, res) => {
 
 /*
   Live quote
-*/
 
 app.get("/api/market/quote", async (req, res) => {
   try {
@@ -612,6 +611,101 @@ app.get("/api/market/quote", async (req, res) => {
     console.error("Quote error:", error);
 
     res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+});
+*/
+app.get("/api/stocks/search", async (req, res) => {
+  try {
+    const query = String(
+      req.query.q || ""
+    ).trim().toUpperCase();
+
+    if (!query) {
+      return res.json({
+        success: true,
+        results: []
+      });
+    }
+
+    const token = await getKiteToken();
+
+    if (!token?.access_token) {
+      return res.status(401).json({
+        success: false,
+        message: "Connect Kite first."
+      });
+    }
+
+    const response = await fetch(
+      "https://api.kite.trade/instruments/NSE",
+      {
+        headers: {
+          "X-Kite-Version": "3",
+          Authorization:
+            `token ${KITE_API_KEY}:${token.access_token}`
+        }
+      }
+    );
+
+    const csv = await response.text();
+
+    if (!response.ok) {
+      return res.status(response.status).json({
+        success: false,
+        message: csv
+      });
+    }
+
+    const lines = csv.split(/
+?
+/);
+    const headings = parseCsvLine(lines.shift() || "");
+
+    const symbolIndex =
+      headings.indexOf("tradingsymbol");
+
+    const nameIndex =
+      headings.indexOf("name");
+
+    const tokenIndex =
+      headings.indexOf("instrument_token");
+
+    const results = [];
+
+    for (const line of lines) {
+      if (!line.trim()) continue;
+
+      const columns = parseCsvLine(line);
+
+      const symbol = columns[symbolIndex] || "";
+      const name = columns[nameIndex] || "";
+
+      if (
+        symbol.toUpperCase().includes(query) ||
+        name.toUpperCase().includes(query)
+      ) {
+        results.push({
+          exchange: "NSE",
+          symbol,
+          name,
+          instrumentToken: columns[tokenIndex] || ""
+        });
+      }
+
+      if (results.length >= 20) break;
+    }
+
+    return res.json({
+      success: true,
+      results
+    });
+  } catch (error) {
+    console.error("Search error:", error);
+
+    return res.status(500).json({
       success: false,
       message: error.message
     });
