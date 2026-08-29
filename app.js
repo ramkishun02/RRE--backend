@@ -1281,9 +1281,9 @@ function renderStockSearchResults(searchText) {
     </div>
   `;
 }
-//new functction
-const stockSearch = document.getElementById("stockSearch");
-const searchResults = document.getElementById("searchResults");
+/*new functction
+ const stockSearch = document.getElementById("stockSearch");
+ const searchResults = document.getElementById("searchResults");
 
 if (stockSearch && searchResults) {
   stockSearch.addEventListener("input", async () => {
@@ -1399,6 +1399,201 @@ function bindStockSelectionEvents() {
       }
     });
   });
+}
+*/
+const searchInput =
+  document.getElementById("stockSearch");
+
+const searchButton =
+  document.getElementById("stockSearchButton");
+
+const searchResults =
+  document.getElementById("searchResults");
+
+if (searchButton) {
+  searchButton.addEventListener(
+    "click",
+    searchStocks
+  );
+}
+
+if (searchInput) {
+  searchInput.addEventListener(
+    "keydown",
+    (event) => {
+      if (event.key === "Enter") {
+        searchStocks();
+      }
+    }
+  );
+}
+
+async function searchStocks() {
+  if (!searchInput || !searchResults) return;
+
+  const query = searchInput.value.trim();
+
+  if (!query) {
+    searchResults.textContent =
+      "Enter a stock symbol";
+    return;
+  }
+
+  searchResults.textContent =
+    "Searching Kite instruments...";
+
+  try {
+    const response = await fetch(
+      `/api/stocks/search?q=${encodeURIComponent(query)}`
+    );
+
+    const data = await response.json();
+
+    if (response.status === 401) {
+      searchResults.textContent =
+        "Please connect Kite first.";
+      return;
+    }
+
+    if (!response.ok || !data.success) {
+      searchResults.textContent =
+        data.message || "Search failed.";
+      return;
+    }
+
+    const stocks = data.results || [];
+
+    if (!stocks.length) {
+      searchResults.textContent =
+        "No matching NSE stock found.";
+      return;
+    }
+
+    searchResults.innerHTML = stocks
+      .map(
+        (stock) => `
+          <button
+            type="button"
+            class="stock-result"
+            data-symbol="${escapeHtml(stock.symbol)}"
+            data-exchange="${escapeHtml(stock.exchange)}"
+          >
+            <strong>
+              ${escapeHtml(stock.exchange)}:${escapeHtml(stock.symbol)}
+            </strong>
+            <span>
+              ${escapeHtml(stock.name)}
+            </span>
+            <small>
+              Get live price
+            </small>
+          </button>
+        `
+      )
+      .join("");
+
+    document
+      .querySelectorAll(".stock-result")
+      .forEach((button) => {
+        button.addEventListener(
+          "click",
+          () => {
+            loadSelectedStock(
+              button.dataset.exchange,
+              button.dataset.symbol
+            );
+          }
+        );
+      });
+  } catch (error) {
+    console.error("Frontend search error:", error);
+
+    searchResults.textContent =
+      "Cannot connect to backend.";
+  }
+}
+
+async function loadSelectedStock(
+  exchange,
+  symbol
+) {
+  const instrument =
+    `${exchange}:${symbol}`;
+
+  try {
+    const response = await fetch(
+      `/api/market/quote?symbol=${encodeURIComponent(symbol)}`
+    );
+
+    const data = await response.json();
+
+    if (!response.ok || !data.success) {
+      throw new Error(
+        data.message || "Live quote failed"
+      );
+    }
+
+    updateSelectedStockCard(data);
+    updateAiRecommendation(data);
+  } catch (error) {
+    console.error("Quote error:", error);
+    alert(error.message);
+  }
+}
+
+function updateSelectedStockCard(data) {
+  const symbolElement =
+    document.getElementById("selectedStockSymbol");
+
+  const priceElement =
+    document.getElementById("selectedStockPrice");
+
+  if (symbolElement) {
+    symbolElement.textContent =
+      `${data.exchange}:${data.symbol}`;
+  }
+
+  if (priceElement) {
+    priceElement.textContent =
+      `₹${Number(data.last_price).toFixed(2)}`;
+  }
+}
+
+function updateAiRecommendation(data) {
+  const recommendation =
+    document.getElementById(
+      "aiRecommendation"
+    );
+
+  if (!recommendation) return;
+
+  const price = Number(data.last_price);
+  const investmentAmount = 5000;
+  const quantity = Math.floor(
+    investmentAmount / price
+  );
+
+  if (quantity < 1) {
+    recommendation.textContent =
+      `${data.symbol} is above the investment amount.`;
+    return;
+  }
+
+  const total = quantity * price;
+
+  recommendation.textContent =
+    `For ${data.symbol}, ${quantity} share(s) ` +
+    `would use approximately ₹${total.toFixed(2)} ` +
+    `from ₹${investmentAmount}.`;
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
 }
 
 function prepareOrderFromForm() {
