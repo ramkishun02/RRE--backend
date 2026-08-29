@@ -1,333 +1,410 @@
 "use strict";
 
-const API_BASE = "";
+const API = "";
 
-// Change this value to your actual investment amount.
-let investmentAmount = 5000;
+const state = {
+  page: "dashboard",
+  investmentAmount: 5000,
+  selectedStock: null,
+  selectedPrice: null,
+  watchlist: loadStorage("rre_watchlist", []),
+  user: loadStorage("rre_user", null)
+};
 
 document.addEventListener(
   "DOMContentLoaded",
-  initializeApp
+  startApp
 );
 
-function initializeApp() {
-  setupNavigation();
-  checkKiteConnection();
-
-  /*
-    If your AI Recommendation page should open
-    automatically, uncomment the next line.
-
-    showAiRecommendationPage();
-  */
-}
-
-/*
-  Navigation
-*/
-
-function setupNavigation() {
-  const aiButtons = document.querySelectorAll(
-    "[data-page='ai-recommendation'], " +
-    "#aiRecommendationButton, " +
-    "#aiPicksButton, " +
-    ".ai-recommendation-link"
-  );
-
-  aiButtons.forEach((button) => {
-    button.addEventListener(
-      "click",
-      function (event) {
-        event.preventDefault();
-        showAiRecommendationPage();
-      }
-    );
-  });
-}
-
-/*
-  Find the main application container.
-  This supports common IDs used in existing HTML.
-*/
-
-function getPageContainer() {
-  const possibleIds = [
-    "content",
-    "mainContent",
-    "pageContent",
-    "appContent",
-    "contentArea",
-    "main"
-  ];
-
-  for (const id of possibleIds) {
-    const element =
-      document.getElementById(id);
-
-    if (element) {
-      return element;
-    }
-  }
-
-  return null;
-}
-
-/*
-  AI Recommendation page
-*/
-
-function showAiRecommendationPage() {
+function startApp() {
   const container =
-    getPageContainer();
+    findPageContainer();
 
   if (!container) {
-    console.error(
-      "No page container found. " +
-      "Add id='content' to your main page container."
+    showFatalError(
+      "pageContainer is missing in index.html"
     );
 
     return;
   }
 
+  createApplicationLayout(container);
+  bindApplicationEvents();
+  showPage("dashboard");
+  loadKiteStatus();
+}
+
+function findPageContainer() {
+  return (
+    document.getElementById("pageContainer") ||
+    document.getElementById("content") ||
+    document.getElementById("mainContent") ||
+    document.querySelector("main")
+  );
+}
+
+function createApplicationLayout(
+  container
+) {
   container.innerHTML = `
-    <section class="ai-recommendation-page">
+    <div class="rre-application">
 
-      <div class="ai-header">
-        <h2>AI Recommendation</h2>
-        <p>
-          Search any NSE stock and get a live
-          Kite-based recommendation.
-        </p>
+      <header class="rre-header">
+        <div>
+          <h1>RRE Dashboard</h1>
+          <span id="kiteStatus">
+            Checking Kite connection...
+          </span>
+        </div>
+
+        <button
+          id="logoutButton"
+          type="button">
+          Logout
+        </button>
+      </header>
+
+      <div class="rre-body">
+
+        <aside class="rre-sidebar">
+          <button
+            class="nav-button"
+            data-page="dashboard">
+            Dashboard
+          </button>
+
+          <button
+            class="nav-button"
+            data-page="ai">
+            AI Recommendation
+          </button>
+
+          <button
+            class="nav-button"
+            data-page="portfolio">
+            Portfolio
+          </button>
+
+          <button
+            class="nav-button"
+            data-page="watchlist">
+            Watchlist
+          </button>
+
+          <button
+            class="nav-button"
+            data-page="orders">
+            Orders
+          </button>
+
+          <button
+            class="nav-button"
+            data-page="profile">
+            Profile
+          </button>
+
+          <button
+            class="nav-button"
+            data-page="settings">
+            Settings
+          </button>
+        </aside>
+
+        <main
+          id="rrePageContent"
+          class="rre-page-content">
+        </main>
+
+      </div>
+    </div>
+  `;
+}
+
+function bindApplicationEvents() {
+  document
+    .querySelectorAll(".nav-button")
+    .forEach((button) => {
+      button.addEventListener(
+        "click",
+        () => {
+          showPage(button.dataset.page);
+        }
+      );
+    });
+
+  const logoutButton =
+    document.getElementById(
+      "logoutButton"
+    );
+
+  if (logoutButton) {
+    logoutButton.addEventListener(
+      "click",
+      logout
+    );
+  }
+}
+
+function showPage(page) {
+  state.page = page;
+
+  const content =
+    document.getElementById(
+      "rrePageContent"
+    );
+
+  if (!content) return;
+
+  document
+    .querySelectorAll(".nav-button")
+    .forEach((button) => {
+      button.classList.toggle(
+        "active",
+        button.dataset.page === page
+      );
+    });
+
+  if (page === "dashboard") {
+    renderDashboard(content);
+  } else if (page === "ai") {
+    renderAiRecommendation(content);
+  } else if (page === "portfolio") {
+    renderPortfolio(content);
+  } else if (page === "watchlist") {
+    renderWatchlist(content);
+  } else if (page === "orders") {
+    renderOrders(content);
+  } else if (page === "profile") {
+    renderProfile(content);
+  } else if (page === "settings") {
+    renderSettings(content);
+  } else {
+    renderDashboard(content);
+  }
+}
+
+/*
+  Dashboard
+*/
+
+function renderDashboard(content) {
+  content.innerHTML = `
+    <section class="page">
+      <h2>Dashboard</h2>
+
+      <div class="card-grid">
+        <div class="card">
+          <h3>Kite Status</h3>
+          <p id="dashboardKiteStatus">
+            Checking...
+          </p>
+        </div>
+
+        <div class="card">
+          <h3>Watchlist Stocks</h3>
+          <p>${state.watchlist.length}</p>
+        </div>
+
+        <div class="card">
+          <h3>Investment Amount</h3>
+          <p>
+            ₹${formatNumber(
+              state.investmentAmount
+            )}
+          </p>
+        </div>
       </div>
 
-      <div class="investment-box">
-        <label for="investmentAmount">
-          Investment amount
-        </label>
+      <div class="card">
+        <h3>Get Live NSE Quote</h3>
 
         <input
-          id="investmentAmount"
-          type="number"
-          min="1"
-          step="1"
-          value="${investmentAmount}"
-          placeholder="Enter amount"
-        />
-      </div>
-
-      <div class="stock-search-box">
-        <input
-          id="stockSearch"
-          type="search"
-          placeholder="Search stock, e.g. INFY"
-          autocomplete="off"
+          id="dashboardSymbol"
+          type="text"
+          placeholder="Enter symbol e.g. TCS"
         />
 
         <button
-          id="stockSearchButton"
+          id="dashboardQuoteButton"
+          type="button">
+          Get Quote
+        </button>
+
+        <div id="dashboardQuoteResult"></div>
+      </div>
+    </section>
+  `;
+
+  document
+    .getElementById(
+      "dashboardQuoteButton"
+    )
+    .addEventListener(
+      "click",
+      () => {
+        const symbol =
+          document
+            .getElementById(
+              "dashboardSymbol"
+            )
+            .value
+            .trim()
+            .toUpperCase();
+
+        getQuote(
+          symbol,
+          "dashboardQuoteResult"
+        );
+      }
+    );
+
+  loadKiteStatus();
+}
+
+/*
+  AI Recommendation
+*/
+
+function renderAiRecommendation(
+  content
+) {
+  content.innerHTML = `
+    <section class="page">
+      <h2>AI Recommendation</h2>
+
+      <label>
+        Investment amount
+        <input
+          id="aiInvestmentAmount"
+          type="number"
+          min="1"
+          value="${state.investmentAmount}"
+        />
+      </label>
+
+      <div class="search-row">
+        <input
+          id="aiSearchInput"
+          type="search"
+          placeholder="Search stock or company"
+        />
+
+        <button
+          id="aiSearchButton"
           type="button">
           Search
         </button>
       </div>
 
+      <p id="aiSearchMessage"></p>
+
+      <div id="aiSearchResults"></div>
+
       <div
-        id="searchMessage"
-        class="search-message">
+        id="aiSelectedStock"
+        class="card">
+        No stock selected.
       </div>
 
       <div
-        id="searchResults"
-        class="search-results">
+        id="aiResult"
+        class="card">
+        Search a stock to get a recommendation.
       </div>
-
-      <div
-        id="selectedStockCard"
-        class="selected-stock-card"
-        hidden>
-
-        <h3 id="selectedStockSymbol">
-          No stock selected
-        </h3>
-
-        <p>
-          Live price:
-          <strong id="selectedStockPrice">
-            --
-          </strong>
-        </p>
-
-        <p id="selectedStockDetails">
-        </p>
-
-        <div
-          id="aiRecommendation"
-          class="ai-result">
-          Search for a stock to receive a recommendation.
-        </div>
-      </div>
-
     </section>
   `;
 
-  const searchButton =
-    document.getElementById(
-      "stockSearchButton"
-    );
-
-  const searchInput =
-    document.getElementById(
-      "stockSearch"
-    );
-
-  const amountInput =
-    document.getElementById(
-      "investmentAmount"
-    );
-
-  if (searchButton) {
-    searchButton.addEventListener(
+  document
+    .getElementById(
+      "aiSearchButton"
+    )
+    .addEventListener(
       "click",
       searchStocks
     );
-  }
 
-  if (searchInput) {
-    searchInput.addEventListener(
+  document
+    .getElementById(
+      "aiSearchInput"
+    )
+    .addEventListener(
       "keydown",
-      function (event) {
+      (event) => {
         if (event.key === "Enter") {
           searchStocks();
         }
       }
     );
 
-    searchInput.addEventListener(
+  document
+    .getElementById(
+      "aiInvestmentAmount"
+    )
+    .addEventListener(
       "input",
-      clearSearchMessage
-    );
-  }
+      (event) => {
+        const amount =
+          Number(event.target.value);
 
-  if (amountInput) {
-    amountInput.addEventListener(
-      "input",
-      function () {
-        const value =
-          Number(amountInput.value);
-
-        if (Number.isFinite(value) && value > 0) {
-          investmentAmount = value;
-
-          const selectedSymbol =
-            document.getElementById(
-              "selectedStockSymbol"
-            )?.dataset.symbol;
-
-          const selectedPrice =
-            document.getElementById(
-              "selectedStockPrice"
-            )?.dataset.price;
+        if (amount > 0) {
+          state.investmentAmount =
+            amount;
 
           if (
-            selectedSymbol &&
-            selectedPrice
+            state.selectedStock &&
+            state.selectedPrice
           ) {
-            updateAiRecommendation(
-              selectedSymbol,
-              Number(selectedPrice)
-            );
+            updateRecommendation();
           }
         }
       }
     );
-  }
-
-  if (searchInput) {
-    searchInput.focus();
-  }
 }
-
-/*
-  Search stocks from backend
-*/
 
 async function searchStocks() {
   const input =
     document.getElementById(
-      "stockSearch"
+      "aiSearchInput"
     );
 
-  const resultsBox =
+  const message =
     document.getElementById(
-      "searchResults"
+      "aiSearchMessage"
     );
 
-  const messageBox =
+  const results =
     document.getElementById(
-      "searchMessage"
+      "aiSearchResults"
     );
-
-  if (!input || !resultsBox) {
-    console.error(
-      "Search elements are not available."
-    );
-
-    return;
-  }
 
   const query =
     input.value.trim();
 
   if (!query) {
-    showMessage(
-      messageBox,
-      "Enter a stock symbol or company name.",
-      "error"
-    );
+    message.textContent =
+      "Enter a stock symbol.";
 
-    resultsBox.innerHTML = "";
     return;
   }
 
-  showMessage(
-    messageBox,
-    "Searching stocks from Kite...",
-    "loading"
-  );
+  message.textContent =
+    "Searching...";
 
-  resultsBox.innerHTML = "";
+  results.innerHTML = "";
 
   try {
     const response = await fetch(
-      `${API_BASE}/api/stocks/search?q=` +
-      encodeURIComponent(query),
-      {
-        method: "GET",
-        headers: {
-          Accept: "application/json"
-        }
-      }
+      `${API}/api/stocks/search?q=` +
+      encodeURIComponent(query)
     );
 
     const data =
-      await readJson(response);
-
-    if (response.status === 401) {
-      showMessage(
-        messageBox,
-        "Kite is not connected. Connect Kite first.",
-        "error"
-      );
-
-      return;
-    }
+      await response.json();
 
     if (!response.ok || !data.success) {
-      showMessage(
-        messageBox,
+      message.textContent =
         data.message ||
-          "Stock search failed.",
-        "error"
-      );
+        "Search failed.";
 
       return;
     }
@@ -337,399 +414,641 @@ async function searchStocks() {
         ? data.results
         : [];
 
-    if (stocks.length === 0) {
-      showMessage(
-        messageBox,
-        "No matching NSE stock found.",
-        "error"
-      );
+    if (!stocks.length) {
+      message.textContent =
+        "No stock found.";
 
       return;
     }
 
-    showMessage(
-      messageBox,
-      `${stocks.length} stock(s) found.`,
-      "success"
-    );
+    message.textContent =
+      "Select a stock:";
 
-    renderSearchResults(
-      stocks,
-      resultsBox
-    );
+    stocks.forEach((stock) => {
+      const button =
+        document.createElement(
+          "button"
+        );
+
+      button.type = "button";
+      button.className =
+        "stock-result";
+
+      button.textContent =
+        `${stock.exchange || "NSE"}:` +
+        `${stock.symbol}` +
+        `${stock.name ? " - " + stock.name : ""}`;
+
+      button.addEventListener(
+        "click",
+        () => {
+          loadSelectedStock(
+            stock.exchange || "NSE",
+            stock.symbol
+          );
+        }
+      );
+
+      results.appendChild(button);
+    });
   } catch (error) {
-    console.error(
-      "Stock search error:",
-      error
+    console.error(error);
+
+    message.textContent =
+      "Backend connection failed.";
+  }
+}
+
+async function loadSelectedStock(
+  exchange,
+  symbol
+) {
+  const selected =
+    document.getElementById(
+      "aiSelectedStock"
     );
 
-    showMessage(
-      messageBox,
-      "Unable to connect to the backend.",
-      "error"
+  selected.textContent =
+    `${exchange}:${symbol} loading...`;
+
+  try {
+    const data =
+      await requestJson(
+        `/api/market/quote?symbol=` +
+        encodeURIComponent(symbol)
+      );
+
+    const price =
+      Number(data.last_price);
+
+    state.selectedStock =
+      symbol;
+
+    state.selectedPrice =
+      price;
+
+    selected.textContent =
+      `${exchange}:${symbol} - ₹` +
+      formatNumber(price);
+
+    updateRecommendation();
+    addToWatchlist(symbol);
+  } catch (error) {
+    selected.textContent =
+      error.message;
+  }
+}
+
+function updateRecommendation() {
+  const output =
+    document.getElementById(
+      "aiResult"
     );
+
+  if (!output) return;
+
+  const amount =
+    Number(state.investmentAmount);
+
+  const price =
+    Number(state.selectedPrice);
+
+  const quantity =
+    Math.floor(amount / price);
+
+  if (quantity < 1) {
+    output.innerHTML = `
+      <strong>
+        ${escapeHtml(
+          state.selectedStock
+        )}
+      </strong>
+      is above your investment amount.
+      <br>
+      Price: ₹${formatNumber(price)}
+      <br>
+      Investment amount: ₹${formatNumber(amount)}
+    `;
+
+    return;
+  }
+
+  const used =
+    quantity * price;
+
+  output.innerHTML = `
+    <h3>Recommendation</h3>
+    <p>
+      Stock:
+      <strong>
+        ${escapeHtml(
+          state.selectedStock
+        )}
+      </strong>
+    </p>
+    <p>
+      Possible quantity:
+      <strong>${quantity}</strong>
+    </p>
+    <p>
+      Estimated investment:
+      <strong>₹${formatNumber(used)}</strong>
+    </p>
+    <p>
+      Remaining amount:
+      <strong>
+        ₹${formatNumber(amount - used)}
+      </strong>
+    </p>
+    <small>
+      This is a calculation, not financial advice.
+    </small>
+  `;
+}
+
+/*
+  Portfolio
+*/
+
+async function renderPortfolio(content) {
+  content.innerHTML = `
+    <section class="page">
+      <h2>Portfolio</h2>
+      <div id="portfolioResult">
+        Loading portfolio...
+      </div>
+    </section>
+  `;
+
+  try {
+    const holdings =
+      await requestJson(
+        "/api/portfolio/holdings"
+      );
+
+    const positions =
+      await requestJson(
+        "/api/portfolio/positions"
+      );
+
+    const holdingRows =
+      Array.isArray(holdings.data)
+        ? holdings.data
+        : Array.isArray(holdings.holdings)
+          ? holdings.holdings
+          : [];
+
+    const positionRows =
+      Array.isArray(positions.data)
+        ? positions.data
+        : Array.isArray(positions.net)
+          ? positions.net
+          : [];
+
+    document
+      .getElementById(
+        "portfolioResult"
+      )
+      .innerHTML = `
+        <div class="card">
+          <h3>Holdings</h3>
+          ${renderRows(
+            holdingRows
+          )}
+        </div>
+
+        <div class="card">
+          <h3>Positions</h3>
+          ${renderRows(
+            positionRows
+          )}
+        </div>
+      `;
+  } catch (error) {
+    document
+      .getElementById(
+        "portfolioResult"
+      )
+      .textContent =
+      error.message;
   }
 }
 
 /*
-  Render dynamic search results
+  Watchlist
 */
 
-function renderSearchResults(
-  stocks,
-  resultsBox
-) {
-  resultsBox.innerHTML = stocks
-    .map(function (stock) {
-      const exchange =
-        stock.exchange || "NSE";
+function renderWatchlist(content) {
+  content.innerHTML = `
+    <section class="page">
+      <h2>Watchlist</h2>
+      <div id="watchlistResult">
+        ${
+          state.watchlist.length
+            ? state.watchlist
+                .map(
+                  (symbol) => `
+                    <div class="card">
+                      <strong>
+                        ${escapeHtml(symbol)}
+                      </strong>
 
-      const symbol =
-        stock.symbol ||
-        stock.tradingsymbol ||
-        "";
+                      <button
+                        type="button"
+                        data-watch-symbol="${escapeHtml(symbol)}">
+                        Get Quote
+                      </button>
 
-      const name =
-        stock.name || "";
+                      <span
+                        id="watch-${escapeHtml(symbol)}">
+                      </span>
+                    </div>
+                  `
+                )
+                .join("")
+            : "<p>Your watchlist is empty.</p>"
+        }
+      </div>
+    </section>
+  `;
 
-      return `
-        <button
-          type="button"
-          class="stock-result"
-          data-exchange="${escapeHtml(exchange)}"
-          data-symbol="${escapeHtml(symbol)}">
-
-          <span class="stock-result-title">
-            ${escapeHtml(exchange)}:${escapeHtml(symbol)}
-          </span>
-
-          <span class="stock-result-name">
-            ${escapeHtml(name)}
-          </span>
-
-          <span class="stock-result-action">
-            Get live price
-          </span>
-        </button>
-      `;
-    })
-    .join("");
-
-  resultsBox
-    .querySelectorAll(".stock-result")
-    .forEach(function (button) {
+  document
+    .querySelectorAll(
+      "[data-watch-symbol]"
+    )
+    .forEach((button) => {
       button.addEventListener(
         "click",
-        function () {
-          loadLiveQuote(
-            button.dataset.exchange,
-            button.dataset.symbol
+        () => {
+          getQuote(
+            button.dataset.watchSymbol,
+            `watch-${button.dataset.watchSymbol}`
           );
         }
       );
     });
 }
 
-/*
-  Load selected stock price
-*/
+function addToWatchlist(symbol) {
+  if (!symbol) return;
 
-async function loadLiveQuote(
-  exchange,
-  symbol
-) {
-  const card =
-    document.getElementById(
-      "selectedStockCard"
+  if (!state.watchlist.includes(symbol)) {
+    state.watchlist.push(symbol);
+
+    saveStorage(
+      "rre_watchlist",
+      state.watchlist
     );
-
-  const symbolElement =
-    document.getElementById(
-      "selectedStockSymbol"
-    );
-
-  const priceElement =
-    document.getElementById(
-      "selectedStockPrice"
-    );
-
-  const detailsElement =
-    document.getElementById(
-      "selectedStockDetails"
-    );
-
-  const recommendationElement =
-    document.getElementById(
-      "aiRecommendation"
-    );
-
-  if (card) {
-    card.hidden = false;
-  }
-
-  if (symbolElement) {
-    symbolElement.textContent =
-      `${exchange}:${symbol}`;
-
-    symbolElement.dataset.symbol =
-      symbol;
-  }
-
-  if (priceElement) {
-    priceElement.textContent =
-      "Loading...";
-  }
-
-  if (detailsElement) {
-    detailsElement.textContent =
-      "Requesting current price from Kite...";
-  }
-
-  if (recommendationElement) {
-    recommendationElement.textContent =
-      "Preparing recommendation...";
-  }
-
-  try {
-    const response = await fetch(
-      `${API_BASE}/api/market/quote?symbol=` +
-      encodeURIComponent(symbol),
-      {
-        method: "GET",
-        headers: {
-          Accept: "application/json"
-        }
-      }
-    );
-
-    const data =
-      await readJson(response);
-
-    if (response.status === 401) {
-      throw new Error(
-        "Kite connection expired. " +
-        "Please connect Kite again."
-      );
-    }
-
-    if (!response.ok || !data.success) {
-      throw new Error(
-        data.message ||
-          "Live price could not be loaded."
-      );
-    }
-
-    const price =
-      Number(data.last_price);
-
-    if (!Number.isFinite(price) || price <= 0) {
-      throw new Error(
-        "Kite returned an invalid price."
-      );
-    }
-
-    if (priceElement) {
-      priceElement.textContent =
-        `₹${formatNumber(price)}`;
-
-      priceElement.dataset.price =
-        String(price);
-    }
-
-    if (detailsElement) {
-      detailsElement.textContent =
-        "Live price received from Kite Connect.";
-    }
-
-    updateAiRecommendation(
-      symbol,
-      price
-    );
-  } catch (error) {
-    console.error(
-      "Live quote error:",
-      error
-    );
-
-    if (priceElement) {
-      priceElement.textContent =
-        "Unavailable";
-    }
-
-    if (detailsElement) {
-      detailsElement.textContent =
-        error.message;
-    }
-
-    if (recommendationElement) {
-      recommendationElement.textContent =
-        "Recommendation unavailable.";
-    }
   }
 }
 
 /*
-  Dynamic AI recommendation
+  Orders
 */
 
-function updateAiRecommendation(
-  symbol,
-  price
-) {
-  const element =
-    document.getElementById(
-      "aiRecommendation"
-    );
+function renderOrders(content) {
+  content.innerHTML = `
+    <section class="page">
+      <h2>Orders</h2>
 
-  if (!element) return;
-
-  const amount =
-    Number(investmentAmount);
-
-  if (!Number.isFinite(amount) || amount <= 0) {
-    element.textContent =
-      "Enter a valid investment amount.";
-    return;
-  }
-
-  const quantity =
-    Math.floor(amount / price);
-
-  if (quantity < 1) {
-    element.innerHTML = `
-      <strong>Not suitable for this budget</strong>
-      <br>
-      ${escapeHtml(symbol)} price is
-      ₹${formatNumber(price)}.
-      <br>
-      Your investment amount is
-      ₹${formatNumber(amount)}.
-    `;
-
-    return;
-  }
-
-  const total =
-    quantity * price;
-
-  const remaining =
-    amount - total;
-
-  element.innerHTML = `
-    <strong>AI Recommendation</strong>
-    <br>
-    Based on the current Kite price, you could consider
-    <strong>${quantity}</strong> share(s) of
-    <strong>${escapeHtml(symbol)}</strong>.
-    <br>
-    Estimated amount:
-    <strong>₹${formatNumber(total)}</strong>
-    <br>
-    Remaining amount:
-    <strong>₹${formatNumber(remaining)}</strong>
-    <br>
-    <small>
-      This is a calculation, not investment advice.
-    </small>
+      <div id="ordersResult">
+        Loading orders...
+      </div>
+    </section>
   `;
+
+  loadOrders();
+}
+
+async function loadOrders() {
+  try {
+    const data =
+      await requestJson(
+        "/api/orders"
+      );
+
+    const orders =
+      Array.isArray(data.data)
+        ? data.data
+        : Array.isArray(data.orders)
+          ? data.orders
+          : [];
+
+    document
+      .getElementById(
+        "ordersResult"
+      )
+      .innerHTML =
+      renderRows(orders);
+  } catch (error) {
+    document
+      .getElementById(
+        "ordersResult"
+      )
+      .textContent =
+      error.message;
+  }
 }
 
 /*
-  Kite connection status
+  Profile
 */
 
-async function checkKiteConnection() {
-  const statusElement =
-    document.getElementById(
-      "kiteConnectionStatus"
-    );
+function renderProfile(content) {
+  content.innerHTML = `
+    <section class="page">
+      <h2>Profile</h2>
 
-  if (!statusElement) {
+      <div class="card">
+        <p>
+          User ID:
+          <strong id="profileUserId">
+            Loading...
+          </strong>
+        </p>
+
+        <button
+          id="refreshProfileButton"
+          type="button">
+          Refresh Profile
+        </button>
+      </div>
+    </section>
+  `;
+
+  loadProfile();
+}
+
+async function loadProfile() {
+  try {
+    const data =
+      await requestJson(
+        "/api/user/profile"
+      );
+
+    document
+      .getElementById(
+        "profileUserId"
+      )
+      .textContent =
+      data.user_id ||
+      data.data?.user_id ||
+      "Connected";
+  } catch (error) {
+    document
+      .getElementById(
+        "profileUserId"
+      )
+      .textContent =
+      error.message;
+  }
+}
+
+/*
+  Settings
+*/
+
+function renderSettings(content) {
+  content.innerHTML = `
+    <section class="page">
+      <h2>Settings</h2>
+
+      <div class="card">
+        <label>
+          Default investment amount
+          <input
+            id="settingsInvestmentAmount"
+            type="number"
+            min="1"
+            value="${state.investmentAmount}"
+          />
+        </label>
+
+        <button
+          id="saveSettingsButton"
+          type="button">
+          Save Settings
+        </button>
+
+        <p id="settingsMessage"></p>
+      </div>
+    </section>
+  `;
+
+  document
+    .getElementById(
+      "saveSettingsButton"
+    )
+    .addEventListener(
+      "click",
+      () => {
+        const amount =
+          Number(
+            document.getElementById(
+              "settingsInvestmentAmount"
+            ).value
+          );
+
+        if (amount <= 0) {
+          return;
+        }
+
+        state.investmentAmount =
+          amount;
+
+        saveStorage(
+          "rre_investment_amount",
+          amount
+        );
+
+        document
+          .getElementById(
+            "settingsMessage"
+          )
+          .textContent =
+          "Settings saved.";
+      }
+    );
+}
+
+/*
+  Quote
+*/
+
+async function getQuote(
+  symbol,
+  outputId
+) {
+  const output =
+    document.getElementById(outputId);
+
+  if (!symbol) {
+    output.textContent =
+      "Enter a valid symbol.";
+
     return;
   }
 
+  output.textContent =
+    "Loading...";
+
   try {
-    const response = await fetch(
-      `${API_BASE}/api/auth/status`,
-      {
-        headers: {
-          Accept: "application/json"
-        }
-      }
-    );
-
     const data =
-      await readJson(response);
+      await requestJson(
+        `/api/market/quote?symbol=` +
+        encodeURIComponent(symbol)
+      );
 
-    if (data.connected) {
-      statusElement.textContent =
-        "Kite Connected";
-
-      statusElement.style.color =
-        "#16a34a";
-    } else {
-      statusElement.textContent =
-        "Kite Not Connected";
-
-      statusElement.style.color =
-        "#dc2626";
-    }
+    output.textContent =
+      `₹${formatNumber(data.last_price)}`;
   } catch (error) {
-    console.error(
-      "Connection status error:",
-      error
-    );
-
-    statusElement.textContent =
-      "Connection status unavailable";
+    output.textContent =
+      error.message;
   }
 }
 
 /*
-  Utility functions
+  Kite status
 */
 
-async function readJson(response) {
+async function loadKiteStatus() {
+  const status =
+    document.getElementById(
+      "kiteStatus"
+    );
+
+  if (!status) return;
+
+  try {
+    const data =
+      await requestJson(
+        "/api/auth/status"
+      );
+
+    status.textContent =
+      data.connected ||
+      data.accessTokenConfigured
+        ? "Kite Connected"
+        : "Kite Not Connected";
+  } catch {
+    status.textContent =
+      "Kite status unavailable";
+  }
+}
+
+/*
+  Logout
+*/
+
+function logout() {
+  localStorage.removeItem(
+    "rre_user"
+  );
+
+  window.location.href =
+    "/kite/login";
+}
+
+/*
+  Request helpers
+*/
+
+async function requestJson(url) {
+  const response =
+    await fetch(API + url, {
+      method: "GET",
+      headers: {
+        Accept: "application/json"
+      }
+    });
+
   const text =
     await response.text();
 
-  if (!text) {
-    return {};
-  }
+  let data = {};
 
   try {
-    return JSON.parse(text);
+    data =
+      text ? JSON.parse(text) : {};
   } catch {
-    return {
+    data = {
       success: false,
       message: text
     };
   }
-}
 
-function clearSearchMessage() {
-  const messageBox =
-    document.getElementById(
-      "searchMessage"
+  if (!response.ok || data.success === false) {
+    throw new Error(
+      data.message ||
+      `Request failed: ${response.status}`
     );
-
-  if (messageBox) {
-    messageBox.textContent = "";
   }
+
+  return data;
 }
 
-function showMessage(
-  element,
-  message,
-  type
-) {
-  if (!element) return;
+/*
+  Rendering helpers
+*/
 
-  element.textContent =
-    message;
+function renderRows(rows) {
+  if (!rows.length) {
+    return "<p>No records available.</p>";
+  }
 
-  element.className =
-    `search-message ${type || ""}`;
+  return `
+    <div class="table-list">
+      ${rows
+        .map(
+          (row) => `
+            <div class="table-row">
+              <strong>
+                ${escapeHtml(
+                  row.tradingsymbol ||
+                  row.symbol ||
+                  row.instrument_token ||
+                  "Record"
+                )}
+              </strong>
+
+              <span>
+                Qty:
+                ${escapeHtml(
+                  row.quantity ||
+                  row.net_quantity ||
+                  row.qty ||
+                  "-"
+                )}
+              </span>
+
+              <span>
+                P&L:
+                ${escapeHtml(
+                  row.pnl ??
+                  row.unrealised ??
+                  "-"
+                )}
+              </span>
+            </div>
+          `
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function showFatalError(message) {
+  document.body.innerHTML = `
+    <div style="
+      padding: 30px;
+      font-family: Arial;
+      color: white;
+      background: #08111f;
+    ">
+      <h2>Application Error</h2>
+      <p>${escapeHtml(message)}</p>
+    </div>
+  `;
 }
 
 function formatNumber(value) {
@@ -749,4 +1068,24 @@ function escapeHtml(value) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
+}
+
+function loadStorage(key, fallback) {
+  try {
+    const value =
+      localStorage.getItem(key);
+
+    return value
+      ? JSON.parse(value)
+      : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function saveStorage(key, value) {
+  localStorage.setItem(
+    key,
+    JSON.stringify(value)
+  );
 }
