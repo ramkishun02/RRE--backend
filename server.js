@@ -178,7 +178,7 @@ function sendPage(res, title, message, success = false) {
 
 /*
   Database functions
-*/
+
 
 async function initializeDatabase() {
   if (!db) {
@@ -200,6 +200,41 @@ async function initializeDatabase() {
 
   console.log("Database initialized");
 }
+*/
+
+async function initializeDatabase() {
+  if (!db) {
+    console.log(
+      "DATABASE_URL is not configured."
+    );
+    return;
+  }
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS kite_tokens (
+      id INTEGER PRIMARY KEY,
+      access_token TEXT NOT NULL,
+      user_id TEXT,
+      login_time TEXT
+    )
+  `);
+
+  await db.query(`
+    ALTER TABLE kite_tokens
+    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ
+  `);
+
+  await db.query(`
+    UPDATE kite_tokens
+    SET updated_at = NOW()
+    WHERE updated_at IS NULL
+  `);
+
+  console.log(
+    "kite_tokens table is ready"
+  );
+}
+/*
 
 async function saveKiteToken(
   accessToken,
@@ -232,7 +267,44 @@ async function saveKiteToken(
     ]
   );
 }
+*/
+async function saveKiteToken(
+  accessToken,
+  userId,
+  loginTime
+) {
+  if (!db) {
+    throw new Error(
+      "DATABASE_URL is not configured."
+    );
+  }
 
+  await db.query(
+    `
+    INSERT INTO kite_tokens
+      (
+        id,
+        access_token,
+        user_id,
+        login_time,
+        updated_at
+      )
+    VALUES
+      (1, $1, $2, $3, NOW())
+    ON CONFLICT (id)
+    DO UPDATE SET
+      access_token = EXCLUDED.access_token,
+      user_id = EXCLUDED.user_id,
+      login_time = EXCLUDED.login_time,
+      updated_at = NOW()
+    `,
+    [
+      accessToken,
+      userId || null,
+      loginTime || null
+    ]
+  );
+}
 async function getKiteToken() {
   if (!db) return null;
 
