@@ -1631,6 +1631,35 @@ function showToast(message) {
     toast.classList.remove("show");
   }, 3000);
 }
+// new function//
+async function checkKiteConnection() {
+  try {
+    const response = await fetch("/api/auth/status");
+    const data = await response.json();
+
+    const statusElement =
+      document.getElementById("kiteConnectionStatus");
+
+    if (!statusElement) return;
+
+    if (data.connected) {
+      statusElement.textContent =
+        "Kite Connected";
+      statusElement.style.color = "#16a34a";
+    } else {
+      statusElement.textContent =
+        "Kite Not Connected";
+      statusElement.style.color = "#dc2626";
+    }
+  } catch (error) {
+    console.error("Connection status error:", error);
+  }
+}
+
+document.addEventListener(
+  "DOMContentLoaded",
+  checkKiteConnection
+);
 window.showToast = showToast;
 
 renderCurrentPage();
