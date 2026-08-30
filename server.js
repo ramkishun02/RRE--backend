@@ -769,19 +769,17 @@ Enter a symbol and click Get Current Price.
                           encodeURIComponent(
                             stock.symbol
                           );
+                          return ;
+<button class="button stock-button"
+              type="button"
+              data-symbol="${symbol}">
+              ${stock.exchange || "NSE"}:${symbol}
+              ${stock.name || ""}
+            </button>
+          `;
+        })
+        .join("<br>");
 
-                        return `
-                          <button
-                            class="button stock-button"
-                            type="button"
-                            data-symbol="${safeSymbol}">
-                            ${stock.exchange || "NSE"}:${stock.symbol}
-                            ${stock.name ? " - " + stock.name : ""}
-                          </button>
-                        `;
-                      }
-                    )
-                    .join("<br>");
 
                 searchResults
                   .querySelectorAll(
