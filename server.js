@@ -518,7 +518,7 @@ app.get("/api/auth/status", async (req, res) => {
 
 /*
   Dashboard
-*/
+
 
 app.get("/dashboard", async (req, res) => {
   try {
@@ -536,6 +536,314 @@ app.get("/dashboard", async (req, res) => {
   }
 });
 
+*/
+app.get("/dashboard", async (req, res) => {
+  try {
+    const accessToken =
+      await getStoredKiteToken();
+
+    if (!accessToken) {
+      return res.redirect(
+        "/kite/login"
+      );
+    }
+
+    res.send(
+      renderPage(
+        "RRE Dashboard",
+        `
+          <h1>RRE Dashboard</h1>
+
+          <p class="ok">
+            Kite authentication is active.
+          </p>
+
+          <hr>
+
+          <h2>Search Stock</h2>
+
+          <input
+            id="stockSearch"
+            type="search"
+            placeholder="Search stock, for example INFY"
+          >
+
+          <button
+            class="button"
+            id="searchStockButton"
+            type="button">
+            Search
+          </button>
+
+          <div
+            id="stockSearchResults">
+          </div>
+
+          <hr>
+
+          <h2>Current Price</h2>
+
+          <input
+            id="symbol"
+            type="text"
+            placeholder="Enter NSE symbol, for example INFY"
+          >
+
+          <button
+            class="button"
+            id="quoteButton"
+            type="button">
+            Get Current Price
+          </button>
+
+          <pre id="result">
+Enter a symbol and click Get Current Price.
+          </pre>
+
+          <a
+            class="button"
+            href="/">
+            Home
+          </a>
+
+          <script>
+            const symbolInput =
+              document.getElementById("symbol");
+
+            const resultElement =
+              document.getElementById("result");
+
+            const quoteButton =
+              document.getElementById(
+                "quoteButton"
+              );
+
+            quoteButton.addEventListener(
+              "click",
+              loadQuote
+            );
+
+            async function loadQuote() {
+              const symbol =
+                symbolInput.value
+                  .trim()
+                  .toUpperCase();
+
+              if (!symbol) {
+                resultElement.textContent =
+                  "Please enter an NSE symbol.";
+
+                return;
+              }
+
+              resultElement.textContent =
+                "Loading current price...";
+
+              try {
+                const response =
+                  await fetch(
+                    "/api/market/quote?symbol=" +
+                    encodeURIComponent(symbol)
+                  );
+
+                const data =
+                  await response.json();
+
+                if (
+                  !response.ok ||
+                  data.success !== true
+                ) {
+                  resultElement.textContent =
+                    data.message ||
+                    "Current price could not be loaded.";
+
+                  return;
+                }
+
+                if (
+                  data.last_price === undefined ||
+                  data.last_price === null
+                ) {
+                  resultElement.textContent =
+                    "The API returned no last_price.";
+
+                  return;
+                }
+
+                resultElement.textContent =
+                  "Symbol: " + data.symbol + "\
+" +
+                  "Exchange: " + data.exchange + "\
+" +
+                  "Current price: ₹" +
+                  Number(
+                    data.last_price
+                  ).toFixed(2) + "\
+" +
+                  "Updated: " +
+                  new Date(
+                    data.timestamp
+                  ).toLocaleString();
+              } catch (error) {
+                console.error(
+                  "Quote request failed:",
+                  error
+                );
+
+                resultElement.textContent =
+                  "Request failed: " +
+                  error.message;
+              }
+            }
+
+            const searchInput =
+              document.getElementById(
+                "stockSearch"
+              );
+
+            const searchButton =
+              document.getElementById(
+                "searchStockButton"
+              );
+
+            const searchResults =
+              document.getElementById(
+                "stockSearchResults"
+              );
+
+            searchButton.addEventListener(
+              "click",
+              searchStocks
+            );
+
+            async function searchStocks() {
+              const query =
+                searchInput.value.trim();
+
+              if (!query) {
+                searchResults.textContent =
+                  "Enter a stock name or symbol.";
+
+                return;
+              }
+
+              searchResults.textContent =
+                "Searching...";
+
+              try {
+                const response =
+                  await fetch(
+                    "/api/stocks/search?q=" +
+                    encodeURIComponent(query)
+                  );
+
+                const data =
+                  await response.json();
+
+                if (
+                  !response.ok ||
+                  data.success !== true
+                ) {
+                  searchResults.textContent =
+                    data.message ||
+                    "Stock search failed.";
+
+                  return;
+                }
+
+                if (
+                  !data.results ||
+                  data.results.length === 0
+                ) {
+                  searchResults.textContent =
+                    "No matching stock found.";
+
+                  return;
+                }
+
+                searchResults.innerHTML =
+                  data.results
+                    .map(
+                      function (stock) {
+                        const safeSymbol =
+                          encodeURIComponent(
+                            stock.symbol
+                          );
+
+                        return `
+                          <button
+                            class="button stock-button"
+                            type="button"
+                            data-symbol="${safeSymbol}">
+                            ${stock.exchange || "NSE"}:${stock.symbol}
+                            ${stock.name ? " - " + stock.name : ""}
+                          </button>
+                        `;
+                      }
+                    )
+                    .join("<br>");
+
+                searchResults
+                  .querySelectorAll(
+                    ".stock-button"
+                  )
+                  .forEach(
+                    function (button) {
+                      button.addEventListener(
+                        "click",
+                        function () {
+                          const selectedSymbol =
+                            decodeURIComponent(
+                              button.dataset.symbol
+                            );
+
+                          symbolInput.value =
+                            selectedSymbol;
+
+                          loadQuote();
+                        }
+                      );
+                    }
+                  );
+              } catch (error) {
+                console.error(
+                  "Search request failed:",
+                  error
+                );
+
+                searchResults.textContent =
+                  "Search failed: " +
+                  error.message;
+              }
+            }
+          </script>
+        `
+      )
+    );
+  } catch (error) {
+    console.error(
+      "Dashboard error:",
+      error
+    );
+
+    res.status(500).send(
+      renderPage(
+        "Dashboard Error",
+        `
+          <h1>Dashboard Error</h1>
+          <p>${escapeHtml(
+            error.message
+          )}</p>
+          <a
+            class="button"
+            href="/kite/login">
+            Try again
+          </a>
+        `
+      )
+    );
+  }
+});
 
  // Live quote
 
