@@ -536,7 +536,7 @@ app.get("/dashboard", async (req, res) => {
   }
 });
 
-/*
+
   Live quote
 
 app.get("/api/market/quote", async (req, res) => {
@@ -616,7 +616,8 @@ app.get("/api/market/quote", async (req, res) => {
     });
   }
 });
-*/
+
+
 app.get("/api/stocks/search", async (req, res) => {
   try {
     const query = String(
