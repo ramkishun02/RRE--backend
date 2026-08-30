@@ -623,12 +623,14 @@ app.get("/api/stocks/search", async (req, res) => {
       req.query.q || ""
     ).trim().toUpperCase();
 
-    if (!query) {
-      return res.json({
-        success: true,
-        results: []
-      });
-    }
+   // if (!query) {
+      //return res.json({
+        //success: true,
+    // results: []
+     // });
+    //}
+// Change this in server_2.js:
+return res.json(results); // instead of res.json({ success: true, results })
 
     const token = await getKiteToken();
 
