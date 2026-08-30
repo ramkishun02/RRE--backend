@@ -707,8 +707,8 @@ app.get("/api/stocks/search", async (req, res) => {
       message: error.message
     });
   }
-});
-*/
+});*/
+
 function parseCsvLine(line) {
   const values = [];
   let value = "";
@@ -745,6 +745,8 @@ function parseCsvLine(line) {
     item.trim()
   );
 }
+
+
 /*
   Logout
 */
@@ -790,5 +792,6 @@ async function startServer() {
     process.exit(1);
   }
 }
-
+  
 startServer();
+  
