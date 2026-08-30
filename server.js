@@ -537,7 +537,7 @@ app.get("/dashboard", async (req, res) => {
 });
 
 
-  Live quote
+ // Live quote
 
 app.get("/api/market/quote", async (req, res) => {
   try {
