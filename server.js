@@ -658,6 +658,58 @@ app.get("/api/stocks/search", async (req, res) => {
         message: csv
       });
     }
+
+    const lines = csv.split(/\r?\n/);
+    const headings = parseCsvLine(lines.shift() || "");
+
+    const symbolIndex =
+      headings.indexOf("tradingsymbol");
+
+    const nameIndex =
+      headings.indexOf("name");
+
+    const tokenIndex =
+      headings.indexOf("instrument_token");
+
+    const results = [];
+
+    for (const line of lines) {
+      if (!line.trim()) continue;
+
+      const columns = parseCsvLine(line);
+
+      const symbol = columns[symbolIndex] || "";
+      const name = columns[nameIndex] || "";
+
+      if (
+        symbol.toUpperCase().includes(query) ||
+        name.toUpperCase().includes(query)
+      ) {
+        results.push({
+          exchange: "NSE",
+          symbol,
+          name,
+          instrumentToken: columns[tokenIndex] || ""
+        });
+      }
+
+      if (results.length >= 20) break;
+    }
+
+    return res.json({
+      success: true,
+      results
+    });
+  } catch (error) {
+    console.error("Search error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+});
+
    /* const lines = csv.split(/\r?\n/);
     const headings =    parseCsvLine(lines.shift() || "");
 
