@@ -535,6 +535,126 @@ app.get("/dashboard", async (req, res) => {
     );
   }
 });
+// Add these helpers/routes to the Express backend.
+// Expected existing variables: app, db, KITE_API_KEY.
+// Install once: npm install csv-parse
+
+const { parse } = require("csv-parse/sync");
+
+let nseInstrumentCache = {
+  loadedAt: 0,
+  rows: [],
+};
+
+async function getLatestKiteToken() {
+  if (!db) throw new Error("DATABASE_URL is not configured.");
+
+  const result = await db.query(`
+    SELECT access_token
+    FROM kite_tokens
+    ORDER BY updated_at DESC NULLS LAST, id DESC
+    LIMIT 1
+  `);
+
+  return result.rows[0]?.access_token || null;
+}
+
+async function kiteRequest(path, accessToken) {
+  const response = await fetch(`https://api.kite.trade${path}`, {
+    headers: {
+      "X-Kite-Version": "3",
+      Authorization: `token ${KITE_API_KEY}:${accessToken}`,
+    },
+  });
+
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || body.status !== "success") {
+    const error = new Error(body.message || `Kite request failed (${response.status})`);
+    error.status = response.status;
+    throw error;
+  }
+
+  return body.data;
+}
+
+async function loadNseInstruments(accessToken) {
+  const cacheIsFresh =
+    nseInstrumentCache.rows.length > 0 &&
+    Date.now() - nseInstrumentCache.loadedAt < 24 * 60 * 60 * 1000;
+
+  if (cacheIsFresh) return nseInstrumentCache.rows;
+
+  const response = await fetch("https://api.kite.trade/instruments/NSE", {
+    headers: {
+      "X-Kite-Version": "3",
+      Authorization: `token ${KITE_API_KEY}:${accessToken}`,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Unable to download Kite instruments (${response.status})`);
+  }
+
+  const csv = await response.text();
+  const rows = parse(csv, {
+    columns: true,
+    skip_empty_lines: true,
+    relax_column_count: true,
+  }).filter(
+    (row) => row.segment === "NSE" && row.instrument_type === "EQ"
+  );
+
+  nseInstrumentCache = { loadedAt: Date.now(), rows };
+  return rows;
+}
+
+app.get("/api/stocks/search", async (req, res) => {
+  const query = String(req.query.q || "").trim().toLowerCase();
+
+  if (query.length < 1) {
+    return res.json({ stocks: [] });
+  }
+
+  try {
+    const accessToken = await getLatestKiteToken();
+    if (!accessToken) {
+      return res.status(401).json({ message: "Please connect Kite first." });
+    }
+
+    const instruments = await loadNseInstruments(accessToken);
+    const matches = instruments
+      .filter((row) =>
+        `${row.tradingsymbol} ${row.name || ""}`.toLowerCase().includes(query)
+      )
+      .slice(0, 10);
+
+    if (!matches.length) return res.json({ stocks: [] });
+
+    const quoteQuery = matches
+      .map((row) => `i=${encodeURIComponent(`NSE:${row.tradingsymbol}`)}`)
+      .join("&");
+    const quotes = await kiteRequest(`/quote/ltp?${quoteQuery}`, accessToken);
+
+    const stocks = matches.map((row) => {
+      const quote = quotes[`NSE:${row.tradingsymbol}`] || {};
+      return {
+        symbol: row.tradingsymbol,
+        name: row.name || row.tradingsymbol,
+        exchange: row.exchange || "NSE",
+        price: Number(quote.last_price || row.last_price || 0),
+        instrumentToken: row.instrument_token,
+      };
+    });
+
+    return res.json({ stocks });
+  } catch (error) {
+    console.error("Kite stock search error:", error);
+    return res.status(error.status === 403 ? 401 : 502).json({
+      message: error.message || "Kite stock search failed.",
+    });
+  }
+});
+
 
 /*
   Live quote
