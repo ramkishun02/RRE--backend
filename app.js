@@ -463,7 +463,7 @@ function renderAI() {
           <div class="strategy-symbol">
             <div class="symbol-box">${recommendation.symbol.slice(0, 3)}</div>
             <div>
-              <h3>${recommendation.symbol}</h3>
+              <h3>${recommendation.symbol}</h3>dw
               <p>${recommendation.name}</p>
             </div>
           </div>
@@ -516,8 +516,9 @@ function renderAI() {
         </div>
 
         <div id="stockSearchResults">
-          ${renderStockSearchResults("")}
+          
         </div>
+<input type="text" id="stockSearch" placeholder="Search symbol or company" oninput="renderStockSearchResults(this.value)">
 
         <div class="warning-box" style="margin-top:18px;">
           AI suggestions are not guaranteed returns. Review the stock and
