@@ -438,9 +438,11 @@ function renderHome() {
     </div>
   `;
 }
-
+/*
 
 function renderAI() {
+  app.innerHTML = renderRecommendationPage()
+  setupDynamicStockSearch();
   const recommendation = state.recommendation;
 
   return `
@@ -515,9 +517,13 @@ function renderAI() {
             placeholder="Search symbol or company"
           />
         </div>
+        <input id="dynamicStockSearch" type="text" placeholder="Search stock">
 
-    
-<input type="text" id="stockSearch" placeholder="Search symbol or company" oninput="renderStockSearchResults(this.value)">
+<button id="dynamicStockSearchButton" type="button">
+  Search
+</button>
+
+<div id="dynamicStockSearchResult"></div>
 
         <div class="warning-box" style="margin-top:18px;">
           AI suggestions are not guaranteed returns. Review the stock and
@@ -531,20 +537,41 @@ function renderAI() {
     </div>
 
     <div class="card card-padding" style="margin-top:18px;">
+*/
+function renderRecommendationPage(recommendation) {
+  return `
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <h3>AI Stock Recommendation</h3>
+          <p>Search another stock or use the recommended stock.</p>
+        </div>
+      </div>
+
+      <div class="search-box">
+        <input
+          id="dynamicStockSearch"
+          type="text"
+          placeholder="Search stock symbol, e.g. RELIANCE"
+          autocomplete="off"
+        />
+
+        <button
+          id="dynamicStockSearchButton"
+          type="button"
+        >
+          Search
+        </button>
+
+        <div id="dynamicStockSearchResult"></div>
+      </div>
+
       <div class="card-header">
         <div>
           <h3>Your Current Selection</h3>
           <p>This is the stock that will be used in the order preview.</p>
         </div>
       </div>
-
-    /*  <div class="preview-box">
-        ${previewRow("Selected stock", `${state.selectedStock.symbol} - ${state.selectedStock.name}`)}
-        ${previewRow("Exchange", state.selectedStock.exchange)}
-        ${previewRow("Price", formatMoney(state.selectedStock.price))}
-        ${previewRow("Selection source", state.selectedStock.symbol === recommendation.symbol ? "AI recommendation" : "User selection")}
-      </div>
-      */
 
       <div class="preview-box">
         ${previewRow(
@@ -575,7 +602,63 @@ function renderAI() {
             : "User selection"
         )}
       </div>
+    </div>
   `;
+}
+
+function setupRecommendationSearch() {
+  const input = document.getElementById("dynamicStockSearch");
+  const button = document.getElementById("dynamicStockSearchButton");
+  const result = document.getElementById("dynamicStockSearchResult");
+
+  if (!input || !button || !result) return;
+
+  async function searchStock() {
+    const symbol = input.value.trim().toUpperCase();
+
+    if (!symbol) {
+      result.textContent = "Please enter a stock symbol.";
+      return;
+    }
+
+    result.textContent = "Searching...";
+    button.disabled = true;
+
+    try {
+      const response = await fetch(
+        `/api/market/quote?symbol=${encodeURIComponent(symbol)}`
+      );
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        result.textContent = data.message || "Stock not found.";
+        return;
+      }
+
+      state.selectedStock = {
+        symbol: data.symbol,
+        name: data.symbol,
+        exchange: data.exchange,
+        price: data.last_price
+      };
+
+      render();
+    } catch (error) {
+      console.error("Stock search failed:", error);
+      result.textContent = "Unable to search stock.";
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  button.onclick = searchStock;
+
+  input.onkeydown = function (event) {
+    if (event.key === "Enter") {
+      searchStock();
+    }
+  };
 }
 
 function renderOrder() {
