@@ -201,6 +201,35 @@ async function initializeDatabase() {
   console.log("Database initialized");
 }
 */
+// new function
+
+let cachedInstruments = [];
+
+async function cacheInstrumentsList() {
+  try {
+    const response = await fetch("https://api.kite.trade/instruments/NSE", {
+      headers: { "X-Kite-Version": "3" }
+    });
+    const csv = await response.text();
+    const lines = csv.split(/\r?\n/);
+    const headings = parseCsvLine(lines.shift() || "");
+    const symbolIndex = headings.indexOf("tradingsymbol");
+    const nameIndex = headings.indexOf("name");
+    const tokenIndex = headings.indexOf("instrument_token");
+
+    cachedInstruments = lines.map(line => {
+      const cols = parseCsvLine(line);
+      return {
+        symbol: cols[symbolIndex] || "",
+        name: cols[nameIndex] || "",
+        instrumentToken: cols[tokenIndex] || ""
+      };
+    }).filter(item => item.symbol);
+    console.log("Cached instruments count:", cachedInstruments.length);
+  } catch (err) {
+    console.error("Failed to cache instruments:", err);
+  }
+}
 
 async function initializeDatabase() {
   if (!db) {
@@ -535,242 +564,6 @@ app.get("/dashboard", async (req, res) => {
     );
   }
 });
-
-/*
-app.get("/dashboard", async (req, res) => {
-  try {
-    const accessToken =
-      await getStoredKiteToken();
-
-    if (!accessToken) {
-      return res.redirect(
-        "/kite/login"
-      );
-    }
-
-    res.send(
-      renderPage(
-        "RRE Dashboard",
-        `
-          <h1>RRE Dashboard</h1>
-
-          <p class="ok">
-            Kite authentication is active.
-          </p>
-
-          <hr>
-
-          <h2>Search Stock</h2>
-
-          <input
-            id="stockSearch"
-            type="search"
-            placeholder="Search stock, for example INFY"
-          >
-
-          <button
-            class="button"
-            id="searchStockButton"
-            type="button">
-            Search
-          </button>
-
-          <div
-            id="stockSearchResults">
-          </div>
-
-          <hr>
-
-          <h2>Current Price</h2>
-
-          <input
-            id="symbol"
-            type="text"
-            placeholder="Enter NSE symbol, for example INFY"
-          >
-
-          <button
-            class="button"
-            id="quoteButton"
-            type="button">
-            Get Current Price
-          </button>
-
-          <pre id="result">
-Enter a symbol and click Get Current Price.
-          </pre>
-
-          <a
-            class="button"
-            href="/">
-            Home
-          </a>
-
-          <script>
-            const symbolInput =
-              document.getElementById("symbol");
-
-            const resultElement =
-              document.getElementById("result");
-
-            const quoteButton =
-              document.getElementById(
-                "quoteButton"
-              );
-
-            quoteButton.addEventListener(
-              "click",
-              loadQuote
-            );
-
-            async function loadQuote() {
-              const symbol =
-                symbolInput.value
-                  .trim()
-                  .toUpperCase();
-
-              if (!symbol) {
-                resultElement.textContent =
-                  "Please enter an NSE symbol.";
-
-                return;
-              }
-
-              resultElement.textContent =
-                "Loading current price...";
-
-              try {
-                const response =
-                  await fetch(
-                    "/api/market/quote?symbol=" +
-                    encodeURIComponent(symbol)
-                  );
-
-                const data =
-                  await response.json();
-
-                if (
-                  !response.ok ||
-                  data.success !== true
-                ) {
-                  resultElement.textContent =
-                    data.message ||
-                    "Current price could not be loaded.";
-
-                  return;
-                }
-
-                if (
-                  data.last_price === undefined ||
-                  data.last_price === null
-                ) {
-                  resultElement.textContent =
-                    "The API returned no last_price.";
-
-                  return;
-                }
-
-                resultElement.textContent =
-                  "Symbol: " + data.symbol + "\
-" +
-                  "Exchange: " + data.exchange + "\
-" +
-                  "Current price: ₹" +
-                  Number(
-                    data.last_price
-                  ).toFixed(2) + "\
-" +
-                  "Updated: " +
-                  new Date(
-                    data.timestamp
-                  ).toLocaleString();
-              } catch (error) {
-                console.error(
-                  "Quote request failed:",
-                  error
-                );
-
-                resultElement.textContent =
-                  "Request failed: " +
-                  error.message;
-              }
-            }
-
-            const searchInput =
-              document.getElementById(
-                "stockSearch"
-              );
-
-            const searchButton =
-              document.getElementById(
-                "searchStockButton"
-              );
-
-            const searchResults =
-              document.getElementById(
-                "stockSearchResults"
-              );
-
-            searchButton.addEventListener(
-              "click",
-              searchStocks
-            );
-
-            async function searchStocks() {
-              const query =
-                searchInput.value.trim();
-
-              if (!query) {
-                searchResults.textContent =
-                  "Enter a stock name or symbol.";
-
-                return;
-              }
-
-              searchResults.textContent =
-                "Searching...";
-
-              try {
-                const response =
-                  await fetch(
-                    "/api/stocks/search?q=" +
-                    encodeURIComponent(query)
-                  );
-
-                const data =
-                  await response.json();
-
-                if (
-                  !response.ok ||
-                  data.success !== true
-                ) {
-                  searchResults.textContent =
-                    data.message ||
-                    "Stock search failed.";
-
-                  return;
-                }
-
-                if (
-                  !data.results ||
-                  data.results.length === 0
-                ) {
-                  searchResults.textContent =
-                    "No matching stock found.";
-
-                  return;
-                }
-
-                searchResults.innerHTML =
-                  data.results
-                    .map(
-                      function (stock) {
-                        const safeSymbol =
-                          encodeURIComponent(
-                            stock.symbol
-                          );
-                          return ;
-*/
  // Live quote
 
 app.get("/api/market/quote", async (req, res) => {
@@ -1064,6 +857,21 @@ async function startServer() {
   try {
     await initializeDatabase();
 
+    
+app.get("/api/stocks/search", (req, res) => {
+  const query = String(req.query.q || "").trim().toUpperCase();
+  if (!query) return res.json({ success: true, results: [] });
+
+  const results = cachedInstruments.filter(item => 
+    item.symbol.toUpperCase().includes(query) || 
+    item.name.toUpperCase().includes(query)
+  ).slice(0, 20);
+
+  res.json({ success: true, results });
+});
+
+ 
+    
     app.listen(PORT, "0.0.0.0", () => {
       console.log(
         `Server running on port ${PORT}`
