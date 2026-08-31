@@ -524,9 +524,7 @@ app.get(
         });
       }
 
-  const lines =csv.split(/
-  ?
-  /);
+csv.split(/\r?\n/);
 const headers =
         parseCsvLine(
           lines.shift() || ""
