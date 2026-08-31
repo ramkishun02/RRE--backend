@@ -1343,7 +1343,7 @@ renderStockSearchResults(searchText) {
     console.log("Selected:", symbol);
   });
 }
-*/
+
 async function renderStockSearchResults(searchText) {
   const search = searchText.trim();
   const searchResultsDiv = document.getElementById("stockSearchResults");
@@ -1401,7 +1401,7 @@ function bindDynamicEvents() {
 
     bindStockSelectionEvents();
   }
-  */
+  
       if (stockSearch) {
     stockSearch.addEventListener("input", async () => {
       await renderStockSearchResults(stockSearch.value);
@@ -1438,6 +1438,91 @@ function bindDynamicEvents() {
     });
   }
 }
+*/
+async function renderStockSearchResults(searchText) {
+  const search = searchText.trim();
+  const searchResultsDiv = document.getElementById("stockSearchResults");
+
+  if (!search) {
+    searchResultsDiv.innerHTML = stockList.map(item => `...`).join(""); 
+    return;
+  }
+
+  try {
+    const response = await fetch(`/api/stocks/search?q=${encodeURIComponent(search)}`);
+    const data = await response.json();
+    
+    const results = data.results || data;
+
+    if (!results.length) {
+      searchResultsDiv.innerHTML = `<div class="info-box">No stock found.</div>`;
+      return;
+    }
+
+    searchResultsDiv.innerHTML = `
+      <div class="holdings-list">
+        ${results.map(item => `
+          <button class="holding-row" data-stock-symbol="${item.symbol}" style="width:100%; border:0; color:white; background:transparent; text-align:left;">
+            <div class="holding-symbol">
+              <div class="symbol-box">${item.symbol.slice(0, 3)}</div>
+              <div>
+                <strong>${item.symbol}</strong>
+                <small>${item.name || item.exchange}</small>
+              </div>
+            </div>
+            <div class="holding-price">
+              <strong>${item.price ? formatMoney(item.price) : 'NSE'}</strong>
+            </div>
+          </button>
+        `).join("")}
+      </div>
+    `;
+    bindStockSelectionEvents();
+  } catch (error) {
+    console.error("Search fetch error:", error);
+  }
+}
+
+function bindDynamicEvents() {
+  const stockSearch = document.getElementById("stockSearch");
+
+  if (stockSearch) {
+    stockSearch.addEventListener("input", async () => {
+      await renderStockSearchResults(stockSearch.value);
+    });
+
+    bindStockSelectionEvents();
+  }
+
+  const orderType = document.getElementById("orderType");
+
+  if (orderType) {
+    orderType.addEventListener("change", () => {
+      const limitGroup = document.getElementById("limitPriceGroup");
+
+      limitGroup.style.display =
+        orderType.value === "LIMIT"
+          ? "block"
+          : "none";
+    });
+  }
+
+  const orderStock = document.getElementById("orderStock");
+
+  if (orderStock) {
+    orderStock.addEventListener("change", () => {
+      const stock = stockList.find(
+        (item) => item.symbol === orderStock.value
+      );
+
+      if (stock) {
+        state.selectedStock = { ...stock };
+        renderCurrentPage();
+      }
+    });
+  }
+}
+
 function bindStockSelectionEvents() {
   document.querySelectorAll("[data-stock-symbol]").forEach((button) => {
     button.addEventListener("click", () => {
