@@ -1235,7 +1235,8 @@ function renderRecentActivity() {
     .join("");
 }
 
-function renderStockSearchResults(searchText) {
+/*function 
+renderStockSearchResults(searchText) {
   const search = searchText.toLowerCase().trim();
 
   const filtered = stockList.filter(
@@ -1343,15 +1344,67 @@ function renderStockSearchResults(searchText) {
   });
 }
 */
+async function renderStockSearchResults(searchText) {
+  const search = searchText.trim();
+  const searchResultsDiv = document.getElementById("stockSearchResults");
+
+  if (!search) {
+    searchResultsDiv.innerHTML = stockList.map(item => `...`).join(""); // fallback to default local list
+    return;
+  }
+
+  try {
+    const response = await fetch(`/api/stocks/search?q=${encodeURIComponent(search)}`);
+    const data = await response.json();
+    
+    const results = data.results || data;
+
+    if (!results.length) {
+      searchResultsDiv.innerHTML = `<div class="info-box">No stock found.</div>`;
+      return;
+    }
+
+    searchResultsDiv.innerHTML = `
+      <div class="holdings-list">
+        ${results.map(item => `
+          <button class="holding-row" data-stock-symbol="${item.symbol}" style="width:100%; border:0; color:white; background:transparent; text-align:left;">
+            <div class="holding-symbol">
+              <div class="symbol-box">${item.symbol.slice(0, 3)}</div>
+              <div>
+                <strong>${item.symbol}</strong>
+                <small>${item.name || item.exchange}</small>
+              </div>
+            </div>
+            <div class="holding-price">
+              <strong>${item.price ? formatMoney(item.price) : 'NSE'}</strong>
+            </div>
+          </button>
+        `).join("")}
+      </div>
+    `;
+    bindStockSelectionEvents();
+  } catch (error) {
+    console.error("Search fetch error:", error);
+  }
+}
+
 function bindDynamicEvents() {
   const stockSearch = document.getElementById("stockSearch");
 
-  if (stockSearch) {
+ /* if (stockSearch) {
     stockSearch.addEventListener("input", () => {
       document.getElementById("stockSearchResults").innerHTML =
         renderStockSearchResults(stockSearch.value);
 
       bindStockSelectionEvents();
+    });
+
+    bindStockSelectionEvents();
+  }
+  */
+      if (stockSearch) {
+    stockSearch.addEventListener("input", async () => {
+      await renderStockSearchResults(stockSearch.value);
     });
 
     bindStockSelectionEvents();
