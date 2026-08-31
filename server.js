@@ -525,11 +525,8 @@ app.get(
       }
 
       const lines =
-        csv.split(/
-?
-/);
-
-      const headers =
+    csv.split(/?/);
+const headers =
         parseCsvLine(
           lines.shift() || ""
         );
