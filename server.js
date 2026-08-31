@@ -248,12 +248,14 @@ async function downloadInstruments() {
   if (!response.ok) {
     throw new Error(csv || "Unable to download NSE instruments.");
   }
+  const csv = await response.text();
 
-  const lines = csv
-    .split(/
-?
-/)
-    .filter((line) => line.trim());
+if (!response.ok) {
+  throw new Error(csv || "Unable to download NSE instruments.");
+}
+  
+  const lines = csv.split(/?/)
+ .filter((line) => line.trim());
 
   if (lines.length < 2) {
     return [];
