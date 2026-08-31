@@ -566,6 +566,309 @@ app.get("/dashboard", async (req, res) => {
 });
  // Live quote
 
+ app.get(
+  "/api/stocks/search",
+  async function (req, res) {
+    try {
+      const query =
+        String(req.query.q || "")
+          .trim()
+          .toUpperCase();
+
+      if (!query) {
+        return res.json({
+          success: true,
+          results: []
+        });
+      }
+
+      const storedToken =
+        await getStoredKiteToken();
+
+      const accessToken =
+        storedToken &&
+        (
+          storedToken.access_token ||
+          storedToken
+        );
+
+      if (!accessToken) {
+        return res.status(401).json({
+          success: false,
+          message:
+            "Connect Kite first."
+        });
+      }
+
+      const response =
+        await fetch(
+          "https://api.kite.trade/instruments/NSE",
+          {
+            method: "GET",
+            headers: {
+              "X-Kite-Version": "3",
+              Authorization:
+                "token " +
+                KITE_API_KEY +
+                ":" +
+                accessToken
+            }
+          }
+        );
+
+      const csv =
+        await response.text();
+
+      if (!response.ok) {
+        return res.status(
+          response.status
+        ).json({
+          success: false,
+          message: csv
+        });
+      }
+
+      const lines =
+        csv.split(
+          String.fromCharCode(10)
+        );
+
+      const headings =
+        parseCsvLine(
+          lines.shift() || ""
+        );
+
+      const symbolIndex =
+        headings.indexOf(
+          "tradingsymbol"
+        );
+
+      const nameIndex =
+        headings.indexOf("name");
+
+      const tokenIndex =
+        headings.indexOf(
+          "instrument_token"
+        );
+
+      const results = [];
+
+      for (
+        let i = 0;
+        i < lines.length;
+        i++
+      ) {
+        if (
+          results.length >= 20
+        ) {
+          break;
+        }
+
+        const line =
+          lines[i];
+
+        if (!line.trim()) {
+          continue;
+        }
+
+        const columns =
+          parseCsvLine(line);
+
+        const symbol =
+          columns[symbolIndex] || "";
+
+        const name =
+          columns[nameIndex] || "";
+
+        if (
+          symbol
+            .toUpperCase()
+            .includes(query) ||
+          name
+            .toUpperCase()
+            .includes(query)
+        ) {
+          results.push({
+            exchange: "NSE",
+            symbol: symbol,
+            name: name,
+            instrumentToken:
+              columns[tokenIndex] || ""
+          });
+        }
+      }
+
+      return res.json({
+        success: true,
+        results: results
+      });
+    } catch (error) {
+      console.error(
+        "Stock search error:",
+        error
+      );
+
+      return res.status(500).json({
+        success: false,
+        message: error.message
+      });
+    }
+  }
+);
+
+
+app.get(
+  "/api/stocks/search",
+  async function (req, res) {
+    try {
+      const query =
+        String(req.query.q || "")
+          .trim()
+          .toUpperCase();
+
+      if (!query) {
+        return res.json({
+          success: true,
+          results: []
+        });
+      }
+
+      const storedToken =
+        await getStoredKiteToken();
+
+      const accessToken =
+        storedToken &&
+        (
+          storedToken.access_token ||
+          storedToken
+        );
+
+      if (!accessToken) {
+        return res.status(401).json({
+          success: false,
+          message:
+            "Connect Kite first."
+        });
+      }
+
+      const response =
+        await fetch(
+          "https://api.kite.trade/instruments/NSE",
+          {
+            method: "GET",
+            headers: {
+              "X-Kite-Version": "3",
+              Authorization:
+                "token " +
+                KITE_API_KEY +
+                ":" +
+                accessToken
+            }
+          }
+        );
+
+      const csv =
+        await response.text();
+
+      if (!response.ok) {
+        return res.status(
+          response.status
+        ).json({
+          success: false,
+          message: csv
+        });
+      }
+
+      const lines =
+        csv.split(
+          String.fromCharCode(10)
+        );
+
+      const headings =
+        parseCsvLine(
+          lines.shift() || ""
+        );
+
+      const symbolIndex =
+        headings.indexOf(
+          "tradingsymbol"
+        );
+
+      const nameIndex =
+        headings.indexOf("name");
+
+      const tokenIndex =
+        headings.indexOf(
+          "instrument_token"
+        );
+
+      const results = [];
+
+      for (
+        let i = 0;
+        i < lines.length;
+        i++
+      ) {
+        if (
+          results.length >= 20
+        ) {
+          break;
+        }
+
+        const line =
+          lines[i];
+
+        if (!line.trim()) {
+          continue;
+        }
+
+        const columns =
+          parseCsvLine(line);
+
+        const symbol =
+          columns[symbolIndex] || "";
+
+        const name =
+          columns[nameIndex] || "";
+
+        if (
+          symbol
+            .toUpperCase()
+            .includes(query) ||
+          name
+            .toUpperCase()
+            .includes(query)
+        ) {
+          results.push({
+            exchange: "NSE",
+            symbol: symbol,
+            name: name,
+            instrumentToken:
+              columns[tokenIndex] || ""
+          });
+        }
+      }
+
+      return res.json({
+        success: true,
+        results: results
+      });
+    } catch (error) {
+      console.error(
+        "Stock search error:",
+        error
+      );
+
+      return res.status(500).json({
+        success: false,
+        message: error.message
+      });
+    }
+  }
+);
+
+
+/*
 app.get("/api/market/quote", async (req, res) => {
   try {
     const symbol = String(
@@ -643,9 +946,9 @@ app.get("/api/market/quote", async (req, res) => {
     });
   }
 });
+*/
 
-
-app.get("/api/stocks/search", async (req, res) => {
+/*app.get("/api/stocks/search", async (req, res) => {
   try {
     const query = String(
       req.query.q || ""
@@ -738,9 +1041,9 @@ return res.json(results); // instead of res.json({ success: true, results })
       message: error.message
     });
   }
-});
+});*/
 
-   /* const lines = csv.split(/\r?\n/);
+   /*const lines = csv.split(/\r?\n/);
     const headings =    parseCsvLine(lines.shift() || "");
 
     const symbolIndex =

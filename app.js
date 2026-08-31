@@ -439,6 +439,7 @@ function renderHome() {
   `;
 }
 
+
 function renderAI() {
   const recommendation = state.recommendation;
 
@@ -515,9 +516,7 @@ function renderAI() {
           />
         </div>
 
-        <div id="stockSearchResults">
-          
-        </div>
+    
 <input type="text" id="stockSearch" placeholder="Search symbol or company" oninput="renderStockSearchResults(this.value)">
 
         <div class="warning-box" style="margin-top:18px;">
@@ -539,13 +538,43 @@ function renderAI() {
         </div>
       </div>
 
-      <div class="preview-box">
+    /*  <div class="preview-box">
         ${previewRow("Selected stock", `${state.selectedStock.symbol} - ${state.selectedStock.name}`)}
         ${previewRow("Exchange", state.selectedStock.exchange)}
         ${previewRow("Price", formatMoney(state.selectedStock.price))}
         ${previewRow("Selection source", state.selectedStock.symbol === recommendation.symbol ? "AI recommendation" : "User selection")}
       </div>
-    </div>
+      */
+
+      <div class="preview-box">
+        ${previewRow(
+          "Selected stock",
+          state.selectedStock
+            ? `${state.selectedStock.symbol} - ${state.selectedStock.name}`
+            : "No stock selected"
+        )}
+
+        ${previewRow(
+          "Exchange",
+          state.selectedStock?.exchange || "-"
+        )}
+
+        ${previewRow(
+          "Price",
+          state.selectedStock
+            ? formatMoney(state.selectedStock.price)
+            : "-"
+        )}
+
+        ${previewRow(
+          "Selection source",
+          state.selectedStock &&
+          recommendation &&
+          state.selectedStock.symbol === recommendation.symbol
+            ? "AI recommendation"
+            : "User selection"
+        )}
+      </div>
   `;
 }
 
