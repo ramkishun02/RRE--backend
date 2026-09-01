@@ -298,7 +298,6 @@ if (!response.ok) {
   }
 */
   const headings = parseCsvLine(line.shift());
-
   const symbolIndex = headings.indexOf("tradingsymbol");
   const nameIndex = headings.indexOf("name");
   const tokenIndex = headings.indexOf("instrument_token");
