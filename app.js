@@ -2,7 +2,7 @@
 
 const state = {
   activePage: "home",
-  mode: "paper",
+  mode: "live",
   amount: 1000,
   previousReturn: 0,
   maxCycles: 10,
@@ -218,14 +218,9 @@ function handleAction(action) {
       showToast(`${state.selectedStock.symbol} selected.`);
       renderCurrentPage();
       break;
-    case "refresh-recommendation": {
-      const next = stockList[Math.floor(Math.random() * stockList.length)];
-      state.recommendation = { ...next };
-      state.selectedStock = { ...next };
-      showToast(`New AI recommendation: ${next.symbol}`);
-      renderCurrentPage();
+    case "refresh-recommendation":
+      loadNseRecommendation();
       break;
-    }
     case "review-order": prepareOrderFromForm(); break;
     case "confirm-paper-order": confirmOrder(); break;
     case "pause-strategy":
@@ -241,9 +236,10 @@ function handleAction(action) {
       renderCurrentPage();
       break;
     case "exit-strategy": exitStrategy("MANUAL_EXIT"); break;
+    case "logout": logout(); break;
     case "toggle-mode":
-      state.mode = state.mode === "paper" ? "live" : "paper";
-      showToast(state.mode === "paper" ? "Paper mode enabled." : "Live mode selected. Backend confirmation required.");
+      state.mode = "live";
+      showToast("Paper mode is disabled. Live mode is active.");
       renderCurrentPage();
       break;
     default: break;
@@ -317,7 +313,12 @@ function renderReports() {
 }
 
 function renderChart(summary) {
-  const points = [summary.invested * 0.88, summary.invested * 0.93, summary.invested * 0.97, summary.invested, summary.currentValue];
+  const investmentStarted = state.history.some((item) => item.action === "BUY") || state.strategy.status !== "AWAITING_CONFIRMATION";
+  const base = Math.max(summary.invested || state.amount, 1);
+  const current = summary.currentValue || base;
+  const points = investmentStarted
+    ? [base * 0.97, base * 0.99, base, base + (current - base) * 0.45, current]
+    : [base, base, base, base, base];
   const max = Math.max(...points, 1);
   const min = Math.min(...points, 0);
   const width = 700;
@@ -425,6 +426,78 @@ async function searchStocks(query) {
   } catch (error) {
     console.warn("Server stock search unavailable; showing local results.", error);
   }
+}
+
+async function loadNseRecommendation() {
+  showToast("Loading recommendation from NSE...");
+  try {
+    const response = await fetch("/api/stocks/recommendation");
+    const data = await response.json();
+    if (!response.ok || !data.success || !data.stock) {
+      showToast(data.message || "Unable to load an NSE recommendation.");
+      return;
+    }
+    let stock = { ...data.stock };
+
+    if (!Number(stock.price)) {
+      const quoteResponse = await fetch(`/api/market/quote?symbol=${encodeURIComponent(stock.symbol)}`);
+      const quote = await quoteResponse.json();
+      if (quoteResponse.ok && quote.success && Number(quote.last_price)) {
+        stock = {
+          ...stock,
+          exchange: quote.exchange || stock.exchange || "NSE",
+          price: Number(quote.last_price)
+        };
+      }
+    }
+
+    if (!Number(stock.price)) {
+      showToast(`${stock.symbol} was found, but its current price is unavailable.`);
+      return;
+    }
+
+    state.recommendation = stock;
+    state.selectedStock = { ...stock };
+    searchedStocks.set(stock.symbol, stock);
+    showToast(`NSE recommendation: ${stock.symbol}`);
+    renderCurrentPage();
+  } catch (error) {
+    console.error("NSE recommendation failed:", error);
+    showToast("Unable to load an NSE recommendation.");
+  }
+}
+
+async function logout() {
+  try {
+    const response = await fetch("/api/auth/logout", { method: "POST" });
+    if (!response.ok) throw new Error("Logout request failed");
+  } catch (error) {
+    console.error("Logout failed:", error);
+    showToast("Logout failed. Please try again.");
+    return;
+  }
+
+  state.strategy.active = false;
+  state.strategy.status = "LOGGED_OUT";
+  window.location.replace("/kite/login");
+}
+
+function installReadableTextStyles() {
+  if (document.getElementById("readableTextStyles")) return;
+  const style = document.createElement("style");
+  style.id = "readableTextStyles";
+  style.textContent = `
+    body { font-size: 16px; }
+    p, small, label, input, select, button, td, th { font-size: 1rem; }
+    h2 { font-size: clamp(1.5rem, 2.2vw, 2rem); }
+    h3 { font-size: 1.25rem; }
+    h4 { font-size: 1.1rem; }
+    .stat-value { font-size: 1.8rem; }
+    .search-item { min-height: 58px; cursor: pointer; }
+    .search-item strong { font-size: 1.05rem; }
+    .search-item small { display: block; margin-top: 4px; }
+  `;
+  document.head.appendChild(style);
 }
 
 function bindDynamicEvents() {
@@ -543,5 +616,12 @@ byId("refreshButton")?.addEventListener("click", () => {
   renderCurrentPage();
 });
 byId("modeToggle")?.addEventListener("click", () => handleAction("toggle-mode"));
+document.querySelectorAll("#logoutButton, #logout, #logoutBtn, [data-action=\"logout\"]").forEach((button) => {
+  button.addEventListener("click", (event) => {
+    event.preventDefault();
+    handleAction("logout");
+  });
+});
 
+installReadableTextStyles();
 renderCurrentPage();
