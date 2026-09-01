@@ -230,77 +230,40 @@ async function downloadInstruments() {
 
   const token = await getKiteToken();
 
-  if (!token || !token.accesstoken) {
-    return [];
-  }
-
-  const response = await fetch(
-    "https://api.kite.trade/instruments/NSE",
-    {
-      method: "GET",
-      headers: {
-        "X-Kite-Version": "3",
-        "Authorization": `token ${KITE_API_KEY}:${token.accesstoken}`
-      }
-    }
-  );
-
-  const csv = await response.text();
-
-  if (!response.ok) {
-    throw new Error(
-      csv || "Unable to download NSE instruments."
-    );
-  }
-
-  const lines = csv.split(/\?/);
-
-  return lines;
-}
-
-
-/*
-async function downloadInstruments() {
-  if (!KITE_API_KEY) return [];
-
-  const token = await getKiteToken();
-
   if (!token?.accesstoken) {
     return [];
   }
 
-  const response = await fetch(
-    "https://api.kite.trade/instruments/NSE",
-    {
-      headers: {
-        "X-Kite-Version": "3",
-        Authorization: `token ${KITE_API_KEY}:${token.accesstoken}`
-      }
+  const response = await fetch("https://api.kite.trade/instruments/NSE", {
+    method: "GET",
+    headers: {
+      "X-Kite-Version": "3",
+      Authorization: `token ${KITE_API_KEY}:${token.accesstoken}`
     }
-  );
+  });
 
   const csv = await response.text();
 
   if (!response.ok) {
     throw new Error(csv || "Unable to download NSE instruments.");
   }
-  const csv = await response.text();
 
-if (!response.ok) {
-  throw new Error(csv || "Unable to download NSE instruments.");
-}
-  
-  const lines = csv.split(/?/)
- .filter((line) => line.trim());
+  const lines = csv
+    .split(/\r?\n/)
+    .filter((line) => line.trim());
 
   if (lines.length < 2) {
     return [];
   }
-*/
-  const headings = parseCsvLine(line.shift());
+
+  const headings = parseCsvLine(lines.shift());
   const symbolIndex = headings.indexOf("tradingsymbol");
   const nameIndex = headings.indexOf("name");
   const tokenIndex = headings.indexOf("instrument_token");
+
+  if (symbolIndex === -1) {
+    throw new Error("The NSE instruments response is missing tradingsymbol.");
+  }
 
   return lines
     .map(parseCsvLine)
@@ -309,8 +272,9 @@ if (!response.ok) {
       symbol: columns[symbolIndex] || "",
       name: columns[nameIndex] || columns[symbolIndex] || "",
       instrumentToken: columns[tokenIndex] || ""
-    })).filter((item) => item.symbol);
-
+    }))
+    .filter((item) => item.symbol);
+}
 
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
