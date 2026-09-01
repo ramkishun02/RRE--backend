@@ -297,7 +297,7 @@ if (!response.ok) {
     return [];
   }
 */
-  const headings = parseCsvLine(lines.shift());
+  const headings = parseCsvLine(line.shift());
 
   const symbolIndex = headings.indexOf("tradingsymbol");
   const nameIndex = headings.indexOf("name");
