@@ -382,31 +382,36 @@ async function selectSearchedStock(symbol) {
     return;
   }
 
-  if (!selected.price) {
-    showToast(`Loading price for ${symbol}...`);
-    try {
-      const response = await fetch(`/api/market/quote?symbol=${encodeURIComponent(symbol)}`);
-      const data = await response.json();
-      if (!response.ok || !data.success || !Number(data.last_price)) {
-        showToast(data.message || "Unable to load this stock price.");
-        return;
-      }
-      selected = {
-        ...selected,
-        exchange: data.exchange || selected.exchange || "NSE",
-        price: Number(data.last_price)
-      };
-      searchedStocks.set(symbol, selected);
-    } catch (error) {
-      console.error("Stock quote failed:", error);
-      showToast("Unable to load this stock price.");
-      return;
-    }
-  }
-
+  // Apply the selection immediately so the user can see it even while the quote loads.
   state.selectedStock = { ...selected };
   showToast(`${symbol} selected.`);
   renderCurrentPage();
+
+  if (selected.price) return;
+
+  showToast(`Loading price for ${symbol}...`);
+  try {
+    const response = await fetch(`/api/market/quote?symbol=${encodeURIComponent(symbol)}`);
+    const data = await response.json();
+
+    if (!response.ok || !data.success || !Number(data.last_price)) {
+      showToast(data.message || `${symbol} selected, but its current price is unavailable.`);
+      return;
+    }
+
+    selected = {
+      ...selected,
+      exchange: data.exchange || selected.exchange || "NSE",
+      price: Number(data.last_price)
+    };
+    searchedStocks.set(symbol, selected);
+    state.selectedStock = { ...selected };
+    showToast(`${symbol} selected.`);
+    renderCurrentPage();
+  } catch (error) {
+    console.error("Stock quote failed:", error);
+    showToast(`${symbol} selected, but its current price is unavailable.`);
+  }
 }
 
 async function searchStocks(query) {
@@ -448,9 +453,6 @@ function bindDynamicEvents() {
     }
   });
 
-  document.querySelectorAll("[data-stock-symbol]").forEach((button) => {
-    button.addEventListener("click", () => selectSearchedStock(button.dataset.stockSymbol));
-  });
 }
 
 function prepareOrderFromForm() {
@@ -517,8 +519,20 @@ function exitStrategy(reason) {
 }
 
 document.addEventListener("click", (event) => {
+  const stockButton = event.target.closest("[data-stock-symbol]");
+  if (stockButton) {
+    event.preventDefault();
+    selectSearchedStock(stockButton.dataset.stockSymbol);
+    return;
+  }
+
   const pageButton = event.target.closest("[data-page]");
-  if (pageButton) navigate(pageButton.dataset.page);
+  if (pageButton) {
+    event.preventDefault();
+    navigate(pageButton.dataset.page);
+    return;
+  }
+
   const actionButton = event.target.closest("[data-action]");
   if (actionButton) handleAction(actionButton.dataset.action);
 });
