@@ -58,6 +58,8 @@ const state = {
   ]
 };
 
+const searchedStocks = new Map();
+
 const stockList = [
   ["INFY", "Infosys Limited", 1520, 82, "Medium", "Strong momentum and stable earnings."],
   ["TCS", "Tata Consultancy Services", 3420, 78, "Low", "Stable large-cap company with consistent performance."],
@@ -275,7 +277,11 @@ function renderOrder() {
   const price = Number(stock.price) || 0;
   const quantity = Math.max(1, Math.floor(state.amount / price) || 1);
   const target = price * 1.08;
-  return `<div class="page-heading"><div><h2>Order Preview</h2><p>Review every value before confirming an order.</p></div></div><div class="form-layout"><div class="card form-card"><h3>Order Details</h3><div class="form-group"><label>Stock</label><select class="select" id="orderStock">${stockList.map((item) => `<option value="${item.symbol}" ${item.symbol === stock.symbol ? "selected" : ""}>${item.symbol} - ${item.name}</option>`).join("")}</select></div><div class="form-group"><label>Transaction type</label><div class="radio-grid"><label class="radio-option selected"><input type="radio" name="transaction" value="BUY" checked> Buy</label><label class="radio-option"><input type="radio" name="transaction" value="SELL"> Sell</label></div></div><div class="form-group"><label>Quantity</label><input class="input" id="orderQuantity" type="number" min="1" value="${quantity}"></div><div class="form-group"><label>Order type</label><select class="select" id="orderType"><option value="MARKET">Market</option><option value="LIMIT">Limit</option></select></div><div class="form-group" id="limitPriceGroup" style="display:none"><label>Limit price</label><input class="input" id="limitPrice" type="number" min="0.05" step="0.05" value="${price}"></div><div class="form-group"><label>Target percentage</label><input class="input" id="targetPercentage" type="number" min="1" max="50" value="8"></div><div class="form-group"><label>Maximum strategy duration</label><select class="select" id="maxDays"><option value="15">15 days</option><option value="30" selected>30 days</option><option value="60">60 days</option></select></div><button class="primary-button" style="width:100%" data-action="review-order">Update Preview</button></div><div class="card form-card"><h3>Final Order Summary</h3><p>No live order is placed until you explicitly confirm.</p><div class="preview-box">${previewRow("Stock", `${escapeHtml(stock.symbol)} - ${escapeHtml(stock.name)}`)}${previewRow("Estimated price", formatMoney(price))}${previewRow("Estimated quantity", quantity)}${previewRow("Estimated amount", formatMoney(quantity * price))}${previewRow("Initial stop-loss", formatMoney(price))}${previewRow("Target price", formatMoney(target))}${previewRow("Maximum duration", `${state.maxDays} days`)}${previewRow("Mode", state.mode === "paper" ? "Paper trading" : "Live trading")}</div><div class="warning-box" style="margin-top:18px">Verify all values before confirmation. Market prices can change.</div><div style="margin-top:18px"><button class="secondary-button" style="width:100%" data-action="confirm-paper-order">Confirm ${state.mode === "paper" ? "Paper" : "Live"} Order</button></div></div></div>`;
+  const orderStocks = [
+    ...stockList.filter((item) => item.symbol !== stock.symbol),
+    stock
+  ];
+  return `<div class="page-heading"><div><h2>Order Preview</h2><p>Review every value before confirming an order.</p></div></div><div class="form-layout"><div class="card form-card"><h3>Order Details</h3><div class="form-group"><label>Stock</label><select class="select" id="orderStock">${orderStocks.map((item) => `<option value="${escapeHtml(item.symbol)}" ${item.symbol === stock.symbol ? "selected" : ""}>${escapeHtml(item.symbol)} - ${escapeHtml(item.name || item.symbol)}</option>`).join("")}</select></div><div class="form-group"><label>Transaction type</label><div class="radio-grid"><label class="radio-option selected"><input type="radio" name="transaction" value="BUY" checked> Buy</label><label class="radio-option"><input type="radio" name="transaction" value="SELL"> Sell</label></div></div><div class="form-group"><label>Quantity</label><input class="input" id="orderQuantity" type="number" min="1" value="${quantity}"></div><div class="form-group"><label>Order type</label><select class="select" id="orderType"><option value="MARKET">Market</option><option value="LIMIT">Limit</option></select></div><div class="form-group" id="limitPriceGroup" style="display:none"><label>Limit price</label><input class="input" id="limitPrice" type="number" min="0.05" step="0.05" value="${price}"></div><div class="form-group"><label>Target percentage</label><input class="input" id="targetPercentage" type="number" min="1" max="50" value="8"></div><div class="form-group"><label>Maximum strategy duration</label><select class="select" id="maxDays"><option value="15">15 days</option><option value="30" selected>30 days</option><option value="60">60 days</option></select></div><button class="primary-button" style="width:100%" data-action="review-order">Update Preview</button></div><div class="card form-card"><h3>Final Order Summary</h3><p>No live order is placed until you explicitly confirm.</p><div class="preview-box">${previewRow("Stock", `${escapeHtml(stock.symbol)} - ${escapeHtml(stock.name)}`)}${previewRow("Estimated price", formatMoney(price))}${previewRow("Estimated quantity", quantity)}${previewRow("Estimated amount", formatMoney(quantity * price))}${previewRow("Initial stop-loss", formatMoney(price))}${previewRow("Target price", formatMoney(target))}${previewRow("Maximum duration", `${state.maxDays} days`)}${previewRow("Mode", state.mode === "paper" ? "Paper trading" : "Live trading")}</div><div class="warning-box" style="margin-top:18px">Verify all values before confirmation. Market prices can change.</div><div style="margin-top:18px"><button class="secondary-button" style="width:100%" data-action="confirm-paper-order">Confirm ${state.mode === "paper" ? "Paper" : "Live"} Order</button></div></div></div>`;
 }
 
 function renderMonitor() {
@@ -342,7 +348,65 @@ function renderRecentActivity() {
 function renderSearchResults(results) {
   const target = byId("stockSearchResults");
   if (!target) return;
-  target.innerHTML = results.length ? results.slice(0, 20).map((item) => `<button type="button" class="holding-row search-item" data-stock-symbol="${escapeHtml(item.symbol)}"><span><strong>${escapeHtml(item.symbol)}</strong><small>${escapeHtml(item.name || item.exchange || "NSE")}</small></span><strong>${item.price ? formatMoney(item.price) : "NSE"}</strong></button>`).join("") : '<div class="info-box">No stock found.</div>';
+
+  const uniqueResults = [];
+  const seen = new Set();
+
+  results.forEach((item) => {
+    const symbol = String(item.symbol || "").trim().toUpperCase();
+    if (!symbol || seen.has(symbol)) return;
+
+    const normalized = {
+      symbol,
+      name: item.name || symbol,
+      exchange: item.exchange || "NSE",
+      price: Number(item.price ?? item.last_price) || 0,
+      instrumentToken: item.instrumentToken || item.instrument_token || ""
+    };
+
+    seen.add(symbol);
+    searchedStocks.set(symbol, normalized);
+    uniqueResults.push(normalized);
+  });
+
+  target.innerHTML = uniqueResults.length
+    ? uniqueResults.slice(0, 20).map((item) => `<button type="button" class="holding-row search-item" data-stock-symbol="${escapeHtml(item.symbol)}"><span><strong>${escapeHtml(item.symbol)}</strong><small>${escapeHtml(item.name)}</small></span><strong>${item.price ? formatMoney(item.price) : "NSE"}</strong></button>`).join("")
+    : '<div class="info-box">No stock found.</div>';
+}
+
+async function selectSearchedStock(symbol) {
+  let selected = searchedStocks.get(symbol) || stockList.find((item) => item.symbol === symbol);
+
+  if (!selected) {
+    showToast("Stock details were not found. Search again.");
+    return;
+  }
+
+  if (!selected.price) {
+    showToast(`Loading price for ${symbol}...`);
+    try {
+      const response = await fetch(`/api/market/quote?symbol=${encodeURIComponent(symbol)}`);
+      const data = await response.json();
+      if (!response.ok || !data.success || !Number(data.last_price)) {
+        showToast(data.message || "Unable to load this stock price.");
+        return;
+      }
+      selected = {
+        ...selected,
+        exchange: data.exchange || selected.exchange || "NSE",
+        price: Number(data.last_price)
+      };
+      searchedStocks.set(symbol, selected);
+    } catch (error) {
+      console.error("Stock quote failed:", error);
+      showToast("Unable to load this stock price.");
+      return;
+    }
+  }
+
+  state.selectedStock = { ...selected };
+  showToast(`${symbol} selected.`);
+  renderCurrentPage();
 }
 
 async function searchStocks(query) {
@@ -385,19 +449,13 @@ function bindDynamicEvents() {
   });
 
   document.querySelectorAll("[data-stock-symbol]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const symbol = button.dataset.stockSymbol;
-      const selected = stockList.find((item) => item.symbol === symbol) || { symbol, name: symbol, exchange: "NSE", price: 0 };
-      state.selectedStock = { ...selected };
-      showToast(`${symbol} selected.`);
-      renderCurrentPage();
-    });
+    button.addEventListener("click", () => selectSearchedStock(button.dataset.stockSymbol));
   });
 }
 
 function prepareOrderFromForm() {
   const symbol = byId("orderStock")?.value;
-  const stock = stockList.find((item) => item.symbol === symbol) || state.selectedStock;
+  const stock = searchedStocks.get(symbol) || stockList.find((item) => item.symbol === symbol) || state.selectedStock;
   const quantity = Number(byId("orderQuantity")?.value);
   const targetPercentage = Number(byId("targetPercentage")?.value);
   const maxDays = Number(byId("maxDays")?.value);
