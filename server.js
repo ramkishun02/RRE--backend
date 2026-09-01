@@ -6,16 +6,12 @@ const express = require("express");
 const { Pool } = require("pg");
 
 const app = express();
-
 const PORT = Number(process.env.PORT || 10000);
 const KITE_API_KEY = process.env.KITE_API_KEY || "";
 const KITE_API_SECRET = process.env.KITE_API_SECRET || "";
-const BASE_URL =
-  process.env.BASE_URL || "https://rre-backend-1.onrender.com";
-const CALLBACK_URL =
-  process.env.KITE_REDIRECT_URL || `${BASE_URL}/kite/callback`;
-const DASHBOARD_URL =
-  process.env.DASHBOARD_URL || `${BASE_URL}/dashboard`;
+const BASE_URL = process.env.BASE_URL || "https://rre-backend-1.onrender.com";
+const CALLBACK_URL = process.env.KITE_REDIRECT_URL || `${BASE_URL}/kite/callback`;
+const DASHBOARD_URL = process.env.DASHBOARD_URL || `${BASE_URL}/dashboard`;
 const DATABASE_URL = process.env.DATABASE_URL || "";
 
 let db = null;
@@ -52,9 +48,39 @@ function escapeHtml(value) {
     .replace(/'/g, "&#039;");
 }
 
+function parseCsvLine(line) {
+  const values = [];
+  let value = "";
+  let insideQuotes = false;
+
+  for (let index = 0; index < line.length; index += 1) {
+    const character = line[index];
+
+    if (character === '"') {
+      if (insideQuotes && line[index + 1] === '"') {
+        value += '"';
+        index += 1;
+      } else {
+        insideQuotes = !insideQuotes;
+      }
+    } else if (character === "," && !insideQuotes) {
+      values.push(value.trim());
+      value = "";
+    } else {
+      value += character;
+    }
+  }
+
+  values.push(value.trim());
+  return values;
+}
+
 function sendPage(res, title, message, success = false) {
   const color = success ? "#16a34a" : "#dc2626";
   const icon = success ? "✓" : "!";
+  const action = success
+    ? `<a href="${escapeHtml(DASHBOARD_URL)}">Continue to Dashboard</a>`
+    : '<a href="/kite/login">Try Again</a>';
 
   return res.send(`
     <!DOCTYPE html>
@@ -76,7 +102,6 @@ function sendPage(res, title, message, success = false) {
           padding: 20px;
           box-sizing: border-box;
         }
-
         .card {
           width: 100%;
           max-width: 420px;
@@ -86,7 +111,6 @@ function sendPage(res, title, message, success = false) {
           border: 1px solid #263853;
           border-radius: 18px;
         }
-
         .icon {
           width: 65px;
           height: 65px;
@@ -99,18 +123,8 @@ function sendPage(res, title, message, success = false) {
           font-size: 40px;
           font-weight: bold;
         }
-
-        h1 {
-          font-size: 22px;
-          margin: 0 0 12px;
-        }
-
-        p {
-          color: #c1ccdc;
-          line-height: 1.5;
-          white-space: pre-wrap;
-        }
-
+        h1 { font-size: 22px; margin: 0 0 12px; }
+        p { color: #c1ccdc; line-height: 1.5; white-space: pre-wrap; }
         a {
           display: inline-block;
           margin-top: 22px;
@@ -127,42 +141,11 @@ function sendPage(res, title, message, success = false) {
         <div class="icon">${icon}</div>
         <h1>${escapeHtml(title)}</h1>
         <p>${escapeHtml(message)}</p>
-        ${
-          success
-            ? `<a href="${escapeHtml(DASHBOARD_URL)}">Continue to Dashboard</a>`
-            : `<a href="/kite/login">Try Again</a>`
-        }
+        ${action}
       </div>
     </body>
     </html>
   `);
-}
-
-function parseCsvLine(line) {
-  const values = [];
-  let value = "";
-  let insideQuotes = false;
-
-  for (let i = 0; i < line.length; i += 1) {
-    const character = line[i];
-
-    if (character === '"') {
-      if (insideQuotes && line[i + 1] === '"') {
-        value += '"';
-        i += 1;
-      } else {
-        insideQuotes = !insideQuotes;
-      }
-    } else if (character === "," && !insideQuotes) {
-      values.push(value.trim());
-      value = "";
-    } else {
-      value += character;
-    }
-  }
-
-  values.push(value.trim());
-  return values;
 }
 
 async function initializeDatabase() {
@@ -172,13 +155,24 @@ async function initializeDatabase() {
   }
 
   await db.query(`
-    CREATE TABLE IF NOT EXISTS kitetokens (
+    CREATE TABLE IF NOT EXISTS kite_tokens (
       id INTEGER PRIMARY KEY,
-      accesstoken TEXT NOT NULL,
-      userid TEXT,
-      logintime TEXT,
-      updatedat TIMESTAMPTZ DEFAULT NOW()
+      access_token TEXT NOT NULL,
+      user_id TEXT,
+      login_time TEXT,
+      updated_at TIMESTAMPTZ DEFAULT NOW()
     )
+  `);
+
+  await db.query(`
+    ALTER TABLE kite_tokens
+    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ
+  `);
+
+  await db.query(`
+    UPDATE kite_tokens
+    SET updated_at = NOW()
+    WHERE updated_at IS NULL
   `);
 
   console.log("Database initialized.");
@@ -191,16 +185,16 @@ async function saveKiteToken(accessToken, userId, loginTime) {
 
   await db.query(
     `
-      INSERT INTO kitetokens
-        (id, accesstoken, userid, logintime, updatedat)
+      INSERT INTO kite_tokens
+        (id, access_token, user_id, login_time, updated_at)
       VALUES
         (1, $1, $2, $3, NOW())
       ON CONFLICT (id)
       DO UPDATE SET
-        accesstoken = EXCLUDED.accesstoken,
-        userid = EXCLUDED.userid,
-        logintime = EXCLUDED.logintime,
-        updatedat = NOW()
+        access_token = EXCLUDED.access_token,
+        user_id = EXCLUDED.user_id,
+        login_time = EXCLUDED.login_time,
+        updated_at = NOW()
     `,
     [accessToken, userId || null, loginTime || null]
   );
@@ -210,8 +204,8 @@ async function getKiteToken() {
   if (!db) return null;
 
   const result = await db.query(`
-    SELECT accesstoken, userid, logintime
-    FROM kitetokens
+    SELECT access_token, user_id, login_time
+    FROM kite_tokens
     WHERE id = 1
     LIMIT 1
   `);
@@ -221,40 +215,29 @@ async function getKiteToken() {
 
 async function deleteKiteToken() {
   if (!db) return;
-  await db.query("DELETE FROM kitetokens WHERE id = 1");
+  await db.query("DELETE FROM kite_tokens WHERE id = 1");
 }
+
 async function downloadInstruments() {
-  if (!KITE_API_KEY) {
-    return [];
-  }
+  if (!KITE_API_KEY) return [];
 
   const token = await getKiteToken();
-
-  if (!token?.accesstoken) {
-    return [];
-  }
+  if (!token?.access_token) return [];
 
   const response = await fetch("https://api.kite.trade/instruments/NSE", {
-    method: "GET",
     headers: {
       "X-Kite-Version": "3",
-      Authorization: `token ${KITE_API_KEY}:${token.accesstoken}`
+      Authorization: `token ${KITE_API_KEY}:${token.access_token}`
     }
   });
 
   const csv = await response.text();
-
   if (!response.ok) {
     throw new Error(csv || "Unable to download NSE instruments.");
   }
 
-  const lines = csv
-    .split(/\r?\n/)
-    .filter((line) => line.trim());
-
-  if (lines.length < 2) {
-    return [];
-  }
+  const lines = csv.split(/\r?\n/).filter((line) => line.trim());
+  if (lines.length < 2) return [];
 
   const headings = parseCsvLine(lines.shift());
   const symbolIndex = headings.indexOf("tradingsymbol");
@@ -283,50 +266,24 @@ app.get("/", (req, res) => {
 app.get("/health", async (req, res) => {
   try {
     const token = await getKiteToken();
-
     res.json({
       success: true,
       backend: true,
       kiteConfigured: Boolean(KITE_API_KEY && KITE_API_SECRET),
       databaseConfigured: Boolean(DATABASE_URL),
-      accessTokenConfigured: Boolean(token?.accesstoken),
+      accessTokenConfigured: Boolean(token?.access_token),
       callbackUrl: CALLBACK_URL,
       dashboardUrl: DASHBOARD_URL,
       timestamp: new Date().toISOString()
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
-  }
-});
-
-app.get("/api/auth/status", async (req, res) => {
-  try {
-    const token = await getKiteToken();
-
-    res.json({
-      success: true,
-      connected: Boolean(token?.accesstoken),
-      userId: token?.userid || null,
-      loginTime: token?.logintime || null
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
+    res.status(500).json({ success: false, message: error.message });
   }
 });
 
 app.get("/kite/login", (req, res) => {
   if (!KITE_API_KEY) {
-    return sendPage(
-      res,
-      "Kite Configuration Error",
-      "KITE_API_KEY is missing."
-    );
+    return sendPage(res, "Kite Configuration Error", "KITE_API_KEY is missing.");
   }
 
   const loginUrl =
@@ -368,24 +325,17 @@ app.get("/kite/callback", async (req, res) => {
     const body = new URLSearchParams({
       api_key: KITE_API_KEY,
       request_token: requestToken,
-      checksum: checksum(
-        KITE_API_KEY,
-        requestToken,
-        KITE_API_SECRET
-      )
+      checksum: checksum(KITE_API_KEY, requestToken, KITE_API_SECRET)
     });
 
-    const response = await fetch(
-      "https://api.kite.trade/session/token",
-      {
-        method: "POST",
-        headers: {
-          "X-Kite-Version": "3",
-          "Content-Type": "application/x-www-form-urlencoded"
-        },
-        body: body.toString()
-      }
-    );
+    const response = await fetch("https://api.kite.trade/session/token", {
+      method: "POST",
+      headers: {
+        "X-Kite-Version": "3",
+        "Content-Type": "application/x-www-form-urlencoded"
+      },
+      body: body.toString()
+    });
 
     const result = await response.json();
 
@@ -415,43 +365,38 @@ app.get("/kite/callback", async (req, res) => {
     );
   } catch (error) {
     console.error("Callback error:", error);
+    return sendPage(res, "Authentication Error", error.message);
+  }
+});
 
-    return sendPage(
-      res,
-      "Authentication Error",
-      error.message
-    );
+app.get("/api/auth/status", async (req, res) => {
+  try {
+    const token = await getKiteToken();
+    res.json({
+      success: true,
+      connected: Boolean(token?.access_token),
+      userId: token?.user_id || null,
+      loginTime: token?.login_time || null
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
   }
 });
 
 app.get("/dashboard", async (req, res) => {
   try {
     const token = await getKiteToken();
-
-    if (!token?.accesstoken) {
-      return res.redirect("/kite/login");
-    }
-
+    if (!token?.access_token) return res.redirect("/kite/login");
     return res.sendFile(path.join(__dirname, "index.html"));
   } catch (error) {
-    return res.status(500).send(
-      `Dashboard error: ${escapeHtml(error.message)}`
-    );
+    return res.status(500).send(`Dashboard error: ${escapeHtml(error.message)}`);
   }
 });
 
 app.get("/api/stocks/search", async (req, res) => {
   try {
-    const query = String(req.query.q || "")
-      .trim()
-      .toUpperCase();
-
-    if (!query) {
-      return res.json({
-        success: true,
-        results: []
-      });
-    }
+    const query = String(req.query.q || "").trim().toUpperCase();
+    if (!query) return res.json({ success: true, results: [] });
 
     if (!cachedInstruments.length) {
       cachedInstruments = await downloadInstruments();
@@ -461,34 +406,20 @@ app.get("/api/stocks/search", async (req, res) => {
       .filter((item) => {
         const symbol = item.symbol.toUpperCase();
         const name = item.name.toUpperCase();
-
-        return (
-          symbol.includes(query) ||
-          name.includes(query)
-        );
+        return symbol.includes(query) || name.includes(query);
       })
       .slice(0, 20);
 
-    return res.json({
-      success: true,
-      results
-    });
+    return res.json({ success: true, results });
   } catch (error) {
     console.error("Stock search error:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: error.message
-    });
+    return res.status(500).json({ success: false, message: error.message });
   }
 });
 
 app.get("/api/market/quote", async (req, res) => {
   try {
-    const symbol = String(req.query.symbol || "")
-      .trim()
-      .toUpperCase();
-
+    const symbol = String(req.query.symbol || "").trim().toUpperCase();
     if (!symbol) {
       return res.status(400).json({
         success: false,
@@ -497,8 +428,7 @@ app.get("/api/market/quote", async (req, res) => {
     }
 
     const token = await getKiteToken();
-
-    if (!token?.accesstoken) {
+    if (!token?.access_token) {
       return res.status(401).json({
         success: false,
         message: "Connect Kite first."
@@ -506,24 +436,19 @@ app.get("/api/market/quote", async (req, res) => {
     }
 
     const instrument = `NSE:${symbol}`;
-
     const response = await fetch(
       "https://api.kite.trade/quote/ltp" +
         `?i=${encodeURIComponent(instrument)}`,
       {
         headers: {
           "X-Kite-Version": "3",
-          Authorization: `token ${KITE_API_KEY}:${token.accesstoken}`
+          Authorization: `token ${KITE_API_KEY}:${token.access_token}`
         }
       }
     );
 
     const result = await response.json();
-
-    if (
-      !response.ok ||
-      result.status !== "success"
-    ) {
+    if (!response.ok || result.status !== "success") {
       return res.status(response.status || 500).json({
         success: false,
         message: result.message || "Kite quote failed."
@@ -531,7 +456,6 @@ app.get("/api/market/quote", async (req, res) => {
     }
 
     const quote = result.data?.[instrument];
-
     if (!quote) {
       return res.status(404).json({
         success: false,
@@ -543,35 +467,24 @@ app.get("/api/market/quote", async (req, res) => {
       success: true,
       exchange: "NSE",
       symbol,
+      instrument,
       last_price: quote.last_price,
       source: "Kite Connect",
       timestamp: new Date().toISOString()
     });
   } catch (error) {
     console.error("Quote error:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: error.message
-    });
+    return res.status(500).json({ success: false, message: error.message });
   }
 });
 
 app.post("/api/auth/logout", async (req, res) => {
   try {
     await deleteKiteToken();
-
     cachedInstruments = [];
-
-    return res.json({
-      success: true,
-      message: "Logged out."
-    });
+    return res.json({ success: true, message: "Logged out." });
   } catch (error) {
-    return res.status(500).json({
-      success: false,
-      message: error.message
-    });
+    return res.status(500).json({ success: false, message: error.message });
   }
 });
 
@@ -585,7 +498,6 @@ app.use((req, res) => {
 async function startServer() {
   try {
     await initializeDatabase();
-
     app.listen(PORT, "0.0.0.0", () => {
       console.log(`Server running on port ${PORT}`);
       console.log(`Callback URL: ${CALLBACK_URL}`);
