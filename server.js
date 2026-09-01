@@ -253,7 +253,7 @@ async function downloadInstruments() {
     );
   }
 
-  const lines = csv.split(/?/);
+  const lines = csv.split(/\?/);
 
   return lines;
 }
