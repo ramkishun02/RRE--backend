@@ -223,7 +223,43 @@ async function deleteKiteToken() {
   if (!db) return;
   await db.query("DELETE FROM kitetokens WHERE id = 1");
 }
+async function downloadInstruments() {
+  if (!KITE_API_KEY) {
+    return [];
+  }
 
+  const token = await getKiteToken();
+
+  if (!token || !token.accesstoken) {
+    return [];
+  }
+
+  const response = await fetch(
+    "https://api.kite.trade/instruments/NSE",
+    {
+      method: "GET",
+      headers: {
+        "X-Kite-Version": "3",
+        "Authorization": `token ${KITE_API_KEY}:${token.accesstoken}`
+      }
+    }
+  );
+
+  const csv = await response.text();
+
+  if (!response.ok) {
+    throw new Error(
+      csv || "Unable to download NSE instruments."
+    );
+  }
+
+  const lines = csv.split(/?/);
+
+  return lines;
+}
+
+
+/*
 async function downloadInstruments() {
   if (!KITE_API_KEY) return [];
 
@@ -260,7 +296,7 @@ if (!response.ok) {
   if (lines.length < 2) {
     return [];
   }
-
+*/
   const headings = parseCsvLine(lines.shift());
 
   const symbolIndex = headings.indexOf("tradingsymbol");
@@ -274,9 +310,8 @@ if (!response.ok) {
       symbol: columns[symbolIndex] || "",
       name: columns[nameIndex] || columns[symbolIndex] || "",
       instrumentToken: columns[tokenIndex] || ""
-    }))
-    .filter((item) => item.symbol);
-}
+    })).filter((item) => item.symbol);
+
 
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
