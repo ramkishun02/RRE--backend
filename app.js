@@ -559,22 +559,77 @@ function prepareOrderFromForm() {
   renderCurrentPage();
 }
 
-function confirmOrder() {
+let orderSubmitting = false;
+
+async function confirmOrder() {
   const s = state.strategy;
-  if (!s.symbol || !s.quantity) return showToast("Complete the order details first.");
-  state.history.unshift({
-    date: formatDate(new Date()),
-    symbol: s.symbol,
-    action: "BUY",
-    amount: s.investmentAmount,
-    result: state.mode === "paper" ? "Paper order completed" : "Sent to backend for Kite execution",
-    status: state.mode === "paper" ? "COMPLETED" : "PENDING"
-  });
-  s.active = true;
-  s.status = state.mode === "paper" ? "MONITORING" : "ORDER_PENDING";
-  s.startDate = formatDate(new Date());
-  showToast(state.mode === "paper" ? "Paper order completed." : "Live order prepared.");
-  navigate("monitor");
+  const transactionType = document.querySelector('input[name="transaction"]:checked')?.value || "BUY";
+  const orderType = byId("orderType")?.value || "MARKET";
+  const limitPrice = Number(byId("limitPrice")?.value || 0);
+
+  if (!s.symbol || !s.quantity || !s.purchasePrice) {
+    showToast("Complete the order details first.");
+    return;
+  }
+
+  const amount = s.purchasePrice * s.quantity;
+  const confirmed = window.confirm(
+    `Confirm ${state.mode === "live" ? "LIVE" : "PAPER"} ${transactionType} order?\\n\\n` +
+    `${s.quantity} ${s.symbol} at ${orderType === "LIMIT" ? formatMoney(limitPrice) : "market price"}.\\n` +
+    `Estimated value: ${formatMoney(amount)}.\\n\\n` +
+    (state.mode === "live" ? "This will send a real order to Kite and may result in financial loss." : "This will only update paper records.")
+  );
+
+  if (!confirmed || orderSubmitting) return;
+
+  orderSubmitting = true;
+  showToast(state.mode === "live" ? "Sending order to Kite..." : "Recording paper order...");
+
+  try {
+    let orderId = "";
+
+    if (state.mode === "live") {
+      const response = await fetch("/api/orders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          exchange: "NSE",
+          tradingsymbol: s.symbol,
+          transaction_type: transactionType,
+          quantity: Number(s.quantity),
+          order_type: orderType,
+          product: "CNC",
+          validity: "DAY",
+          price: orderType === "LIMIT" ? limitPrice : undefined
+        })
+      });
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        throw new Error(data.message || "Kite rejected the order.");
+      }
+      orderId = data.orderId || "UNKNOWN";
+    }
+
+    state.history.unshift({
+      date: formatDate(new Date()),
+      symbol: s.symbol,
+      action: transactionType,
+      amount,
+      result: state.mode === "live" ? `Kite order ID: ${orderId}` : "Paper order completed",
+      status: state.mode === "live" ? "SUBMITTED" : "COMPLETED"
+    });
+
+    s.active = true;
+    s.status = state.mode === "live" ? "ORDER_SUBMITTED" : "MONITORING";
+    s.startDate = formatDate(new Date());
+    showToast(state.mode === "live" ? `Order sent to Kite: ${orderId}` : "Paper order completed.");
+    navigate("monitor");
+  } catch (error) {
+    console.error("Order submission failed:", error);
+    showToast(error.message || "Order submission failed.");
+  } finally {
+    orderSubmitting = false;
+  }
 }
 
 function exitStrategy(reason) {

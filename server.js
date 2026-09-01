@@ -528,6 +528,101 @@ app.get("/api/market/quote", async (req, res) => {
   }
 });
 
+app.post("/api/orders", async (req, res) => {
+  try {
+    if (!KITE_API_KEY) {
+      return res.status(500).json({
+        success: false,
+        message: "KITE_API_KEY is not configured."
+      });
+    }
+
+    const token = await getKiteToken();
+    if (!token?.access_token) {
+      return res.status(401).json({
+        success: false,
+        message: "Connect Kite before placing an order."
+      });
+    }
+
+    const {
+      exchange,
+      tradingsymbol,
+      transaction_type,
+      quantity,
+      order_type,
+      product,
+      validity,
+      price
+    } = req.body || {};
+
+    const normalizedQuantity = Number(quantity);
+    const normalizedPrice = Number(price || 0);
+    const allowedTransactions = new Set(["BUY", "SELL"]);
+    const allowedOrderTypes = new Set(["MARKET", "LIMIT"]);
+
+    if (
+      exchange !== "NSE" ||
+      !String(tradingsymbol || "").trim() ||
+      !allowedTransactions.has(transaction_type) ||
+      !Number.isInteger(normalizedQuantity) ||
+      normalizedQuantity <= 0 ||
+      !allowedOrderTypes.has(order_type) ||
+      order_type === "LIMIT" && normalizedPrice <= 0
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid order details."
+      });
+    }
+
+    const orderBody = new URLSearchParams({
+      exchange: "NSE",
+      tradingsymbol: String(tradingsymbol).trim().toUpperCase(),
+      transaction_type,
+      quantity: String(normalizedQuantity),
+      order_type,
+      product: product === "MIS" ? "MIS" : "CNC",
+      validity: validity === "IOC" ? "IOC" : "DAY"
+    });
+
+    if (order_type === "LIMIT") {
+      orderBody.set("price", normalizedPrice.toString());
+    }
+
+    const response = await fetch("https://api.kite.trade/orders/regular", {
+      method: "POST",
+      headers: {
+        "X-Kite-Version": "3",
+        "Content-Type": "application/x-www-form-urlencoded",
+        Authorization: `token ${KITE_API_KEY}:${token.access_token}`
+      },
+      body: orderBody.toString()
+    });
+
+    const result = await response.json();
+    if (!response.ok || result.status !== "success") {
+      return res.status(response.status || 502).json({
+        success: false,
+        message: result.message || "Kite rejected the order.",
+        errorType: result.error_type || null
+      });
+    }
+
+    return res.json({
+      success: true,
+      orderId: result.data?.order_id || null,
+      message: "Order submitted to Kite."
+    });
+  } catch (error) {
+    console.error("Order submission error:", error);
+    return res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+});
+
 app.post("/api/auth/logout", async (req, res) => {
   try {
     await deleteKiteToken();
