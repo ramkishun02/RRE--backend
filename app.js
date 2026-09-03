@@ -610,26 +610,74 @@ async function confirmOrder() {
       orderId = data.orderId || "UNKNOWN";
     }
 
-    state.history.unshift({
+    const historyItem = {
       date: formatDate(new Date()),
       symbol: s.symbol,
       action: transactionType,
       amount,
+      orderId,
       result: state.mode === "live" ? `Kite order ID: ${orderId}` : "Paper order completed",
       status: state.mode === "live" ? "SUBMITTED" : "COMPLETED"
-    });
+    };
+    state.history.unshift(historyItem);
 
     s.active = true;
     s.status = state.mode === "live" ? "ORDER_SUBMITTED" : "MONITORING";
     s.startDate = formatDate(new Date());
     showToast(state.mode === "live" ? `Order sent to Kite: ${orderId}` : "Paper order completed.");
     navigate("monitor");
+
+    if (state.mode === "live" && orderId) {
+      monitorKiteOrder(orderId, historyItem);
+    }
   } catch (error) {
     console.error("Order submission failed:", error);
     showToast(error.message || "Order submission failed.");
   } finally {
     orderSubmitting = false;
   }
+}
+
+async function monitorKiteOrder(orderId, historyItem) {
+  const terminalStatuses = new Set(["COMPLETE", "REJECTED", "CANCELLED"]);
+
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+
+    try {
+      const response = await fetch(`/api/orders/${encodeURIComponent(orderId)}/status`);
+      const data = await response.json();
+      if (!response.ok || !data.success) return;
+
+      historyItem.status = data.status;
+      historyItem.result = data.statusMessage
+        ? `Kite ${data.status}: ${data.statusMessage}`
+        : `Kite order ID: ${orderId}`;
+
+      if (data.status === "COMPLETE" && data.averagePrice) {
+        state.strategy.currentPrice = data.averagePrice;
+        state.strategy.purchasePrice = data.averagePrice;
+        state.strategy.investmentAmount = data.averagePrice * state.strategy.quantity;
+        state.strategy.stopLoss = data.averagePrice;
+        state.strategy.targetPrice = data.averagePrice * (1 + state.strategy.targetPercentage / 100);
+      }
+
+      if (terminalStatuses.has(data.status)) {
+        state.strategy.status = data.status === "COMPLETE" ? "MONITORING" : `ORDER_${data.status}`;
+        showToast(`Kite order ${data.status.toLowerCase()}.`);
+        renderCurrentPage();
+        return;
+      }
+
+      showToast(`Kite order status: ${data.status}`);
+      renderCurrentPage();
+    } catch (error) {
+      console.error("Order status polling failed:", error);
+      return;
+    }
+  }
+
+  showToast(`Order ${orderId} is still pending. Check Kite for the latest status.`);
 }
 
 function exitStrategy(reason) {

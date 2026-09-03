@@ -609,13 +609,85 @@ app.post("/api/orders", async (req, res) => {
       });
     }
 
+    const orderId = result.data?.order_id || null;
+    if (!orderId) {
+      return res.status(502).json({
+        success: false,
+        message: "Kite accepted the request but returned no order ID."
+      });
+    }
+
     return res.json({
       success: true,
-      orderId: result.data?.order_id || null,
+      orderId,
+      status: "OPEN",
       message: "Order submitted to Kite."
     });
   } catch (error) {
     console.error("Order submission error:", error);
+    return res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+});
+
+app.get("/api/orders/:orderId/status", async (req, res) => {
+  try {
+    const token = await getKiteToken();
+    const orderId = String(req.params.orderId || "").trim();
+
+    if (!token?.access_token) {
+      return res.status(401).json({
+        success: false,
+        message: "Connect Kite before checking order status."
+      });
+    }
+
+    if (!orderId) {
+      return res.status(400).json({
+        success: false,
+        message: "Order ID is required."
+      });
+    }
+
+    const response = await fetch(
+      `https://api.kite.trade/orders/${encodeURIComponent(orderId)}`,
+      {
+        headers: {
+          "X-Kite-Version": "3",
+          Authorization: `token ${KITE_API_KEY}:${token.access_token}`
+        }
+      }
+    );
+
+    const result = await response.json();
+    if (!response.ok || result.status !== "success") {
+      return res.status(response.status || 502).json({
+        success: false,
+        message: result.message || "Unable to read order status."
+      });
+    }
+
+    const orders = Array.isArray(result.data) ? result.data : [];
+    const latest = orders[orders.length - 1];
+    if (!latest) {
+      return res.status(404).json({
+        success: false,
+        message: "Order status was not found."
+      });
+    }
+
+    return res.json({
+      success: true,
+      orderId: latest.order_id || orderId,
+      status: latest.status || "UNKNOWN",
+      statusMessage: latest.status_message || "",
+      filledQuantity: Number(latest.filled_quantity || 0),
+      averagePrice: Number(latest.average_price || 0)
+    });
+  } catch (error) {
+    console.error("Order status error:", error);
     return res.status(500).json({
       success: false,
       message: error.message
