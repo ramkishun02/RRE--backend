@@ -15,7 +15,7 @@ const CALLBACK_URL = process.env.KITE_REDIRECT_URL || `${BASE_URL}/kite/callback
 const DASHBOARD_URL = process.env.DASHBOARD_URL || `${BASE_URL}/dashboard`;
 const DATABASE_URL = process.env.DATABASE_URL || "";
 const ALGOIP_PROXY_URL = String(process.env.ALGOIP_PROXY_URL || "").trim();
-const ALGOIP_PROXY_PROTOCOL = String(process.env.ALGOIP_PROXY_PROTOCOL || "http").trim().replace(/:$/, "");
+const ALGOIP_PROXY_PROTOCOL = String(process.env.ALGOIP_PROXY_PROTOCOL || "https").trim().replace(/:$/, "");
 const ALGOIP_PROXY_HOST = String(process.env.ALGOIP_PROXY_HOST || "dc46-mum-01.algoip.in").trim();
 const ALGOIP_PROXY_PORT = String(process.env.ALGOIP_PROXY_PORT || "443").trim();
 const ALGOIP_PROXY_USER = String(process.env.ALGOIP_PROXY_USER || "").trim();
@@ -416,8 +416,14 @@ app.get("/kite/callback", async (req, res) => {
       true
     );
   } catch (error) {
-    console.error("Callback error:", error);
-    return sendPage(res, "Authentication Error", error.message);
+    const code = error?.cause?.code || error?.code || "NETWORK_ERROR";
+    const detail = error?.cause?.message || error?.message || "Unable to reach Kite.";
+    console.error("Callback error:", { code, detail });
+    return sendPage(
+      res,
+      "Authentication Error",
+      `Kite session request failed (${code}). ${detail}. Check AlgoIP protocol, host, port, username, and password in Render.`
+    );
   }
 });
 
