@@ -328,6 +328,49 @@ app.get("/health", async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 });
+//new function 
+app.get("/api/debug/algoip", async (req, res) => {
+  const result = {
+    host: ALGOIP_PROXY_HOST,
+    port: ALGOIP_PROXY_PORT,
+    usernameConfigured: Boolean(ALGOIP_PROXY_USER),
+    passwordConfigured: Boolean(ALGOIP_PROXY_PASSWORD),
+    proxyUrlBuilt: false,
+    proxyRequest: false,
+    error: null
+  };
+
+  try {
+    const proxy = buildProxyUrl();
+
+    result.proxyUrlBuilt = Boolean(proxy);
+
+    if (!proxy) {
+      result.error = "Proxy URL was not built. Check username/password.";
+      return res.json(result);
+    }
+
+    const response = await fetch("https://api.ipify.org?format=json");
+
+    const data = await response.json();
+
+    result.proxyRequest = true;
+    result.publicIp = data.ip;
+
+    return res.json(result);
+  } catch (error) {
+    result.error = {
+      name: error?.name,
+      message: error?.message,
+      code: error?.cause?.code || error?.code || null,
+      cause: error?.cause?.message || null
+    };
+
+    return res.status(500).json(result);
+  }
+});
+
+
 
 app.get("/api/proxy-check", async (req, res) => {
   if (!proxyUrl) {
