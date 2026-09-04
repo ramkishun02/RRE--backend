@@ -14,10 +14,10 @@ const BASE_URL = process.env.BASE_URL || "https://rre-backend-1.onrender.com";
 const CALLBACK_URL = process.env.KITE_REDIRECT_URL || `${BASE_URL}/kite/callback`;
 const DASHBOARD_URL = process.env.DASHBOARD_URL || `${BASE_URL}/dashboard`;
 const DATABASE_URL = process.env.DATABASE_URL || "";
-const ALGOIP_PROXY_HOST = String(process.env.ALGOIP_PROXY_HOST || process.env.ALGOIP_PROXY_HOST || "dc46-mum-01.algoip.in").trim();
-const ALGOIP_PROXY_PORT = String(process.env.ALGOIP_PROXY_PORT || process.env.ALGOIP_PROXY_PORT || "443").trim();
-const ALGOIP_PROXY_USER = String(process.env.ALGOIP_PROXY_USER || process.env.ALGOIP_PROXY_USER || "").trim();
-const ALGOIP_PROXY_PASSWORD = String(process.env.ALGOIP_PROXY_PASSWORD || process.env.ALGOIP_PROXY_PASSWORD || "");
+const ALGOIP_PROXY_HOST = String(process.env.ALGO_IP_PROXY_HOST || process.env.ALGOIP_PROXY_HOST || "dc46-mum-01.algoip.in").trim();
+const ALGOIP_PROXY_PORT = String(process.env.ALGO_IP_PROXY_PORT || process.env.ALGOIP_PROXY_PORT || "443").trim();
+const ALGOIP_PROXY_USER = String(process.env.ALGO_IP_PROXY_USER || process.env.ALGOIP_PROXY_USER || "").trim();
+const ALGOIP_PROXY_PASSWORD = String(process.env.ALGO_IP_PROXY_PASSWORD || process.env.ALGOIP_PROXY_PASSWORD || "");
 
 function buildProxyUrl() {
   if (!ALGOIP_PROXY_USER || !ALGOIP_PROXY_PASSWORD) return "";
@@ -36,7 +36,7 @@ try {
     setGlobalDispatcher(new ProxyAgent(proxyUrl));
     console.log(`AlgoIP proxy enabled: ${ALGOIP_PROXY_HOST}:${ALGOIP_PROXY_PORT}`);
   } else {
-    console.warn("AlgoIP proxy is not configured. Set ALGOIP_PROXY_USER and ALGOIP_PROXY_PASSWORD in Render.");
+    console.warn("AlgoIP proxy is not configured. Set ALGO_IP_PROXY_USER and ALGO_IP_PROXY_PASSWORD in Render.");
   }
 } catch (error) {
   console.error(`Proxy configuration error: ${error.message}`);
@@ -388,12 +388,7 @@ app.get("/kite/callback", async (req, res) => {
       result.data.login_time
     );
 
-    return sendPage(
-      res,
-      "Authentication Complete",
-      "Kite authentication completed successfully.",
-      true
-    );
+    return res.redirect(`${DASHBOARD_URL}?kite=connected`);
   } catch (error) {
     const code = error?.cause?.code || error?.code || "NETWORK_ERROR";
     const detail = error?.cause?.message || error?.message || "Unable to reach Kite.";
