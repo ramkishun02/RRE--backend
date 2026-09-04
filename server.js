@@ -14,38 +14,18 @@ const BASE_URL = process.env.BASE_URL || "https://rre-backend-1.onrender.com";
 const CALLBACK_URL = process.env.KITE_REDIRECT_URL || `${BASE_URL}/kite/callback`;
 const DASHBOARD_URL = process.env.DASHBOARD_URL || `${BASE_URL}/dashboard`;
 const DATABASE_URL = process.env.DATABASE_URL || "";
-const ALGOIP_PROXY_URL = String(process.env.ALGOIP_PROXY_URL || "").trim();
-const ALGOIP_PROXY_PROTOCOL = String(process.env.ALGOIP_PROXY_PROTOCOL || "https").trim().replace(/:$/, "");
-const ALGOIP_PROXY_HOST = String(process.env.ALGOIP_PROXY_HOST || "dc46-mum-01.algoip.in").trim();
-const ALGOIP_PROXY_PORT = String(process.env.ALGOIP_PROXY_PORT || "443").trim();
-const ALGOIP_PROXY_USER = String(process.env.ALGOIP_PROXY_USER || "").trim();
-const ALGOIP_PROXY_PASSWORD = String(process.env.ALGOIP_PROXY_PASSWORD || "");
+const ALGOIP_PROXY_HOST = String(process.env.ALGOIP_PROXY_HOST || process.env.ALGOIP_PROXY_HOST || "dc46-mum-01.algoip.in").trim();
+const ALGOIP_PROXY_PORT = String(process.env.ALGOIP_PROXY_PORT || process.env.ALGOIP_PROXY_PORT || "443").trim();
+const ALGOIP_PROXY_USER = String(process.env.ALGOIP_PROXY_USER || process.env.ALGOIP_PROXY_USER || "").trim();
+const ALGOIP_PROXY_PASSWORD = String(process.env.ALGOIP_PROXY_PASSWORD || process.env.ALGOIP_PROXY_PASSWORD || "");
 
 function buildProxyUrl() {
-  let candidate = ALGOIP_PROXY_URL;
-
-  if (!candidate) {
-    if (!ALGOIP_PROXY_USER || !ALGOIP_PROXY_PASSWORD) {
-      return "";
-    }
-    candidate = `${ALGOIP_PROXY_PROTOCOL}://${encodeURIComponent(ALGOIP_PROXY_USER)}:${encodeURIComponent(ALGOIP_PROXY_PASSWORD)}@${ALGOIP_PROXY_HOST}:${ALGOIP_PROXY_PORT}`;
-  } else if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(candidate)) {
-    candidate = `${ALGOIP_PROXY_PROTOCOL}://${candidate}`;
+  if (!ALGOIP_PROXY_USER || !ALGOIP_PROXY_PASSWORD) return "";
+  const candidate = `http://${encodeURIComponent(ALGOIP_PROXY_USER)}:${encodeURIComponent(ALGO_IP_PROXY_PASSWORD)}@${ALGOIP_PROXY_HOST}:${ALGOIP_PROXY_PORT}`;
+  const parsed = new URL(candidate);
+  if (!parsed.hostname || !/^\d+$/.test(parsed.port)) {
+    throw new Error("Invalid AlgoIP proxy settings. Check host and numeric port.");
   }
-
-  let parsed;
-  try {
-    parsed = new URL(candidate);
-  } catch (error) {
-    throw new Error("Invalid AlgoIP proxy URL. Use http:// or https://HOST:PORT, with credentials URL-encoded.");
-  }
-
-  const effectivePort = parsed.port || (parsed.protocol === "https:" ? "443" : "80");
-  if (!["http:", "https:"].includes(parsed.protocol) || !parsed.hostname || !/^\d+$/.test(effectivePort)) {
-    throw new Error("Invalid AlgoIP proxy URL. Expected http(s)://[USER:PASSWORD@]HOST:PORT.");
-  }
-
-  if (!parsed.port) parsed.port = effectivePort;
   return parsed.toString();
 }
 
@@ -54,10 +34,9 @@ try {
   proxyUrl = buildProxyUrl();
   if (proxyUrl) {
     setGlobalDispatcher(new ProxyAgent(proxyUrl));
-    const safeProxy = new URL(proxyUrl);
-    console.log(`AlgoIP proxy enabled: ${safeProxy.protocol}//${safeProxy.hostname}:${safeProxy.port}`);
+    console.log(`AlgoIP proxy enabled: ${ALGOIP_PROXY_HOST}:${ALGOIP_PROXY_PORT}`);
   } else {
-    console.warn("AlgoIP proxy is not configured. Set ALGOIP_PROXY_USER and ALGOIP_PROXY_PASSWORD in Render.");
+    console.warn("AlgoIP proxy is not configured. Set ALGO_IP_PROXY_USER and ALGO_IP_PROXY_PASSWORD in Render.");
   }
 } catch (error) {
   console.error(`Proxy configuration error: ${error.message}`);
