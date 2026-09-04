@@ -41,7 +41,7 @@ let proxyUrl = "";
 try {
   proxyUrl = buildProxyUrl();
   if (proxyUrl) {
-    setGlobalDispatcher(new ProxyAgent(proxyUrl));
+    setGlobalDispatcher(new ProxyAgent({ uri: proxyUrl }));
     console.log(`AlgoIP proxy enabled: ${ALGOIP_PROXY_HOST}:${ALGOIP_PROXY_PORT}`);
   } else {
     console.warn("AlgoIP proxy is not configured. Set ALGO_IP_PROXY_USER and ALGO_IP_PROXY_PASSWORD in Render.");
@@ -317,6 +317,34 @@ app.get("/health", async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+app.get("/api/proxy-check", async (req, res) => {
+  if (!proxyUrl) {
+    return res.status(503).json({ success: false, message: "AlgoIP proxy is not configured." });
+  }
+
+  try {
+    const response = await fetch("https://ip64.algoip.in/all?format=json");
+    const data = await response.json();
+    return res.status(response.ok ? 200 : 502).json({
+      success: response.ok,
+      proxyConfigured: true,
+      routedIp: data.ip || null,
+      country: data.country || null,
+      city: data.city || null,
+      message: response.ok ? "AlgoIP proxy routing is working." : "AlgoIP proxy verification failed."
+    });
+  } catch (error) {
+    const code = error?.cause?.code || error?.code || "NETWORK_ERROR";
+    console.error("Proxy check error:", { code, message: error.message });
+    return res.status(502).json({
+      success: false,
+      proxyConfigured: true,
+      code,
+      message: "Render cannot reach the AlgoIP proxy. Check the host, port, username, password, and AlgoIP service status."
+    });
   }
 });
 
