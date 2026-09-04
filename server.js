@@ -21,7 +21,7 @@ const ALGOIP_PROXY_PASSWORD = String(process.env.ALGO_IP_PROXY_PASSWORD || proce
 
 function buildProxyUrl() {
   if (!ALGOIP_PROXY_USER || !ALGOIP_PROXY_PASSWORD) return "";
-  const candidate = `http://${encodeURIComponent(ALGOIP_PROXY_USER)}:${encodeURIComponent(ALGOIP_PROXY_PASSWORD)}@${ALGOIP_PROXY_HOST}:${ALGOIP_PROXY_PORT}`;
+  const candidate = `https://${encodeURIComponent(ALGOIP_PROXY_USER)}:${encodeURIComponent(ALGOIP_PROXY_PASSWORD)}@${ALGOIP_PROXY_HOST}:${ALGOIP_PROXY_PORT}`;
   const parsed = new URL(candidate);
   if (!parsed.hostname || !/^\d+$/.test(parsed.port)) {
     throw new Error("Invalid AlgoIP proxy settings. Check host and numeric port.");
