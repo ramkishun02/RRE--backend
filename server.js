@@ -17,8 +17,8 @@ const DATABASE_URL = process.env.DATABASE_URL || "";const ALGOIP_PROXY_HOST = St
 
 const ALGOIP_PROXY_PORT = String(process.env.ALGO_IP_PROXY_PORT || process.env.ALGOIP_PROXY_PORT || "443").trim();
 const ALGOIP_PROXY_USER = String(process.env.ALGO_IP_PROXY_USER || process.env.ALGOIP_PROXY_USER || "").trim();
-const ALGOIP_PROXY_PASSWORD = String(process.env.ALGO_IP_PROXY_PASSWORD || process.env.ALGOIP_PROXY_IP || "");
-String(process.env.ALGO_IP_PROXY_IP || process.env.ALGOIP_IP|| "");
+const ALGOIP_PROXY_PASSWORD = String(process.env.ALGO_IP_PROXY_PASSWORD || process.env.ALGOIP_PROXY_PASSWORD || "");
+const ALGOIP_PROXY_IP=String(process.env.ALGOIP_PROXY_IP || process.env.ALGOIP_PROXY_IP|| "");
 
 
 /*
