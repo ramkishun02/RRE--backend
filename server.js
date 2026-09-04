@@ -13,14 +13,15 @@ const KITE_API_SECRET = process.env.KITE_API_SECRET || "";
 const BASE_URL = process.env.BASE_URL || "https://rre-backend-1.onrender.com";
 const CALLBACK_URL = process.env.KITE_REDIRECT_URL || `${BASE_URL}/kite/callback`;
 const DASHBOARD_URL = process.env.DASHBOARD_URL || `${BASE_URL}/dashboard`;
-const DATABASE_URL = process.env.DATABASE_URL || "";
-/* const ALGOIP_PROXY_HOST = String(process.env.ALGO_IP_PROXY_HOST || process.env.ALGOIP_PROXY_HOST || "dc46-mum-01.algoip.in").trim();
+const DATABASE_URL = process.env.DATABASE_URL || "";const ALGOIP_PROXY_HOST = String(process.env.ALGO_IP_PROXY_HOST || process.env.ALGOIP_PROXY_HOST || "dc46-mum-01.algoip.in").trim();
+
 const ALGOIP_PROXY_PORT = String(process.env.ALGO_IP_PROXY_PORT || process.env.ALGOIP_PROXY_PORT || "443").trim();
 const ALGOIP_PROXY_USER = String(process.env.ALGO_IP_PROXY_USER || process.env.ALGOIP_PROXY_USER || "").trim();
 const ALGOIP_PROXY_PASSWORD = String(process.env.ALGO_IP_PROXY_PASSWORD || process.env.ALGOIP_PROXY_IP || "");
-String(process.env.ALGO_IP_PROXY_IP || process.env.ALGOIP_ENABL|| "");
-*/
+String(process.env.ALGO_IP_PROXY_IP || process.env.ALGOIP_IP|| "");
 
+
+/*
 const ALGOIP_HOST = process.env.ALGOIP_HOST || "";
 const ALGOIP_PORT = process.env.ALGOIP_PORT || "";
 const ALGOIP_USER = process.env.ALGOIP_USER || "";
@@ -32,11 +33,12 @@ function buildProxyUrl() {
   if (!ALGOIP_USER || !ALGOIP_PASSWORD) return "";
 
   const portNumber = Number(ALGOIP_PORT);
-  if (!ALGOIP_HOST || !Number.isInteger(portNumber) || portNumber < 1 || portNumber > 65535) {
+  */
+  if (!ALGOIP_PROXY_HOST || !Number.isInteger(portNumber) || portNumber < 1 || portNumber > 65535) {
     throw new Error("Invalid AlgoIP proxy settings. Check host and numeric port.");
   }
 
-  const candidate = `http://${encodeURIComponent(ALGOIP_USER)}:${encodeURIComponent(ALGOIP_PASSWORD)}@${ALGOIP_HOST}:${portNumber}`;
+  const candidate = `http://${encodeURIComponent(ALGOIP_PROXY_USER)}:${encodeURIComponent(ALGOIP_PROXY_PASSWORD)}@${ALGOIP_PROXY_HOST}:${portNumber}`;
   try {
     const parsed = new URL(candidate);
     if (!parsed.hostname) throw new Error("Missing proxy hostname");
