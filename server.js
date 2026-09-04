@@ -21,12 +21,20 @@ const ALGOIP_PROXY_PASSWORD = String(process.env.ALGO_IP_PROXY_PASSWORD || proce
 
 function buildProxyUrl() {
   if (!ALGOIP_PROXY_USER || !ALGOIP_PROXY_PASSWORD) return "";
-  const candidate = `https://${encodeURIComponent(ALGOIP_PROXY_USER)}:${encodeURIComponent(ALGOIP_PROXY_PASSWORD)}@${ALGOIP_PROXY_HOST}:${ALGOIP_PROXY_PORT}`;
-  const parsed = new URL(candidate);
-  if (!parsed.hostname || !/^\d+$/.test(parsed.port)) {
+
+  const portNumber = Number(ALGOIP_PROXY_PORT);
+  if (!ALGOIP_PROXY_HOST || !Number.isInteger(portNumber) || portNumber < 1 || portNumber > 65535) {
     throw new Error("Invalid AlgoIP proxy settings. Check host and numeric port.");
   }
-  return parsed.toString();
+
+  const candidate = `http://${encodeURIComponent(ALGOIP_PROXY_USER)}:${encodeURIComponent(ALGOIP_PROXY_PASSWORD)}@${ALGOIP_PROXY_HOST}:${portNumber}`;
+  try {
+    const parsed = new URL(candidate);
+    if (!parsed.hostname) throw new Error("Missing proxy hostname");
+    return parsed.toString();
+  } catch (error) {
+    throw new Error("Invalid AlgoIP proxy settings. Check host, port, username, and password.");
+  }
 }
 
 let proxyUrl = "";
