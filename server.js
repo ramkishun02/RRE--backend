@@ -202,9 +202,7 @@ async function downloadInstruments() {
     throw new Error(csv || "Unable to download NSE instruments.");
   }
 
-  const lines = csv.split(/
-?
-/);
+  const lines = csv.split(/\?/);
 
   if (lines.length < 2) {
     return [];
