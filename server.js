@@ -24,7 +24,7 @@ String(process.env.ALGO_IP_PROXY_IP || process.env.ALGOIP_ENABL|| "");
 const ALGOIP_HOST = process.env.ALGOIP_HOST || "";
 const ALGOIP_PORT = process.env.ALGOIP_PORT || "";
 const ALGOIP_USER = process.env.ALGOIP_USER || "";
-const ALGOIP_PASS = process.env.ALGOIP_PASS || "";
+const ALGOIP_PASSWORD = process.env.ALGOIP_PASSWORD || "";
 const ALGOIP_ENABLED =
   process.env.ALGOIP_ENABLED === "true" || false;
 
