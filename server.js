@@ -33,10 +33,11 @@ function buildProxyUrl() {
   if (!ALGOIP_USER || !ALGOIP_PASSWORD) return "";
 
   const portNumber = Number(ALGOIP_PORT);
+  }
   */
   if (!ALGOIP_PROXY_HOST || !Number.isInteger(portNumber) || portNumber < 1 || portNumber > 65535) {
     throw new Error("Invalid AlgoIP proxy settings. Check host and numeric port.");
-  }
+  
 
   const candidate = `http://${encodeURIComponent(ALGOIP_PROXY_USER)}:${encodeURIComponent(ALGOIP_PROXY_PASSWORD)}@${ALGOIP_PROXY_HOST}:${portNumber}`;
   try {
