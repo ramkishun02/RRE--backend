@@ -313,25 +313,69 @@ function serveIndex(res) {
   });
 }
 
-/* Kite login_time is IST "YYYY-MM-DD HH:MM:SS". Access tokens expire around
-   6 AM IST the following day (regulatory requirement per Kite docs). */
-function approximateTokenExpiry(loginTime) {
-  const match = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/.exec(
-    String(loginTime || "")
-  );
+/* Kite returns login_time as an IST string ("YYYY-MM-DD HH:MM:SS"), but the
+   database column type decides what comes back on read: a TEXT column returns
+   the string, while timestamp/timestamptz columns return a JS Date. This
+   helper normalises every variant into a UTC epoch instant (or null). */
+function loginTimeToInstantMs(loginTime) {
+  if (loginTime instanceof Date) {
+    const ms = loginTime.getTime();
+    return Number.isFinite(ms) ? ms : null;
+  }
+
+  const raw = String(loginTime ?? "").trim();
+  if (!raw) return null;
+
+  /* ISO 8601 with an explicit timezone (e.g. "2026-09-05T19:13:05.000Z" or
+     "2026-09-05 19:13:05+00:00") - the instant is unambiguous, parse direct. */
+  if (
+    /\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})/.test(raw)
+  ) {
+    const ms = Date.parse(raw);
+    return Number.isFinite(ms) ? ms : null;
+  }
+
+  /* Kite's raw format carries no timezone marker and is IST (UTC+5:30). */
+  const match = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/.exec(raw);
   if (!match) return null;
 
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-  const hour = Number(match[4]);
-  const minute = Number(match[5]);
-  const second = Number(match[6]);
+  return (
+    Date.UTC(
+      Number(match[1]),
+      Number(match[2]) - 1,
+      Number(match[3]),
+      Number(match[4]),
+      Number(match[5]),
+      Number(match[6])
+    ) - IST_OFFSET_MS
+  );
+}
 
-  const loginUtcMs =
-    Date.UTC(year, month - 1, day, hour, minute, second) - IST_OFFSET_MS;
+/* Canonical storage form: UTC ISO string. Safe for TEXT columns (readable,
+   self-describing) and for timestamp/timestamptz columns (Postgres parses the
+   Z suffix as UTC, so no silent timezone shifting can occur). */
+function normalizeLoginTime(loginTime) {
+  const ms = loginTimeToInstantMs(loginTime);
+  return ms === null ? null : new Date(ms).toISOString();
+}
+
+/* Kite access tokens expire around 6 AM IST the following day (regulatory
+   requirement per Kite docs). Returns the next 6 AM IST boundary after the
+   login instant, in UTC ISO format, or null when the login time is unknown. */
+function approximateTokenExpiry(loginTime) {
+  const loginUtcMs = loginTimeToInstantMs(loginTime);
+  if (loginUtcMs === null) return null;
+
+  const istClock = new Date(loginUtcMs + IST_OFFSET_MS);
   let expiryUtcMs =
-    Date.UTC(year, month - 1, day, 6, 0, 0) - IST_OFFSET_MS;
+    Date.UTC(
+      istClock.getUTCFullYear(),
+      istClock.getUTCMonth(),
+      istClock.getUTCDate(),
+      6,
+      0,
+      0
+    ) - IST_OFFSET_MS;
   if (loginUtcMs >= expiryUtcMs) {
     expiryUtcMs += 24 * 60 * 60 * 1000;
   }
@@ -435,6 +479,12 @@ async function getStoredToken(force = false) {
     LIMIT 1
   `);
   const value = result.rows[0] || null;
+  if (value) {
+    /* The column type decides the JS type: TEXT gives Kite's IST string,
+       timestamp(tz) gives a Date. Normalise so every consumer downstream
+       (auth status, health, expiry math) sees a canonical UTC ISO string. */
+    value.login_time = normalizeLoginTime(value.login_time) ?? value.login_time;
+  }
   tokenCache = { value, fetchedAt: Date.now() };
   return value;
 }
@@ -864,7 +914,7 @@ false,
     await saveKiteToken(
       result.data.access_token,
       result.data.user_id,
-      result.data.login_time
+      normalizeLoginTime(result.data.login_time)
     );
     console.log(
       `[kite] login OK (user ${result.data.user_id}); token saved and valid until ~` +
