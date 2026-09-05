@@ -638,9 +638,9 @@ async function downloadInstruments(accessToken) {
   if (lines.length < 2) return [];
 
   const headings = parseCsvLine(lines.shift());
-  const symbolIndex =
-
-headings.indexOf("instrument_token");
+  const symbolIndex = headings.indexOf("tradingsymbol");
+  const nameIndex = headings.indexOf("name");
+  const tokenIndex = headings.indexOf("instrument_token");
 
   if (symbolIndex === -1) {
     throw new Error("The NSE instruments response is missing tradingsymbol.");
@@ -794,11 +794,12 @@ app.get("/kite/callback", async (req, res) => {
       5
     );
   }
-if (!KITE_API_KEY || !KITE_API_SECRET) {
+  if (!KITE_API_KEY || !KITE_API_SECRET) {
     return sendPage(
-      res, "Configuration Error",
-"KITE_API_KEY or KITE_API_SECRET ismissing.”
-);
+      res,
+      "Configuration Error",
+      "KITE_API_KEY or KITE_API_SECRET is missing."
+    );
   }
 
   if (!db) {
@@ -934,16 +935,6 @@ app.get("/dashboard", async (req, res) => {
   }
 });
 
-app.get("/dashboard", async (req, res) => {
-  try {
-    const token = await getStoredToken();
-    if (!token?.access_token) return res.redirect("/kite/login");
-    return serveIndex(res);
-  } catch (error) {
-    return res.status(500).send(`Dashboard error: ${escapeHtml(error.message)}`);
-  }
-});
-
 app.get("/api/stocks/search", async (req, res) => {
   try {
     const query = String(req.query.q || "").trim().toUpperCase();
@@ -999,11 +990,11 @@ app.get("/api/stocks/recommendation", async (req, res) => {
     if (!candidates.length) {
       return res.status(404).json({
         success: false,
-        message: "No NSE instruments are available.”});
+        message: "No NSE instruments are available."
+      });
     }
 
-const selected=candidates[Math.floor
-  (Math.random() * candidates.length)];
+    const selected = candidates[Math.floor(Math.random() * candidates.length)];
     const score = 65 + Math.floor(Math.random() * 30);
 
     return res.json({
@@ -1157,7 +1148,7 @@ const orderBody = new URLSearchParams({
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
-kiteAuthHeaders(token.access_token)
+        ...kiteAuthHeaders(token.access_token)
       },
       body: orderBody.toString()
     });
@@ -1268,6 +1259,24 @@ app.post("/api/auth/logout", async (req, res) => {
   }
 });
 
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    message: `Route ${req.method} ${req.originalUrl} was not found.`
+  });
+});
+
+/* JSON body parse errors and anything else that throws inside a route. */
+app.use((error, req, res, next) => {
+  if (error?.type === "entity.parse.failed") {
+    return res.status(400).json({ success: false, message: "Invalid JSON body." });
+  }
+  console.error("[express] Route error:", error);
+  return res
+    .status(error?.status || 500)
+    .json({ success: false, message: error?.message || "Internal server error." });
+});
+
 /* ------------------------------------------------------------------ */
 /* 9. Background helpers                                               */
 /* ------------------------------------------------------------------ */
@@ -1277,7 +1286,7 @@ function startSessionSweeper() {
     try {
       const token = await getStoredToken(true);
       if (!token?.access_token) return;
-const alive = await isSessionAlive(token.access_token, { force: true });
+      const alive = await isSessionAlive(token.access_token, { force: true });
       if (!alive) {
         console.log(
           "[kite] session sweeper: stored token is no longer valid; clearing it"
@@ -1332,7 +1341,7 @@ function logStartupBanner() {
   console.log(`  callback URL:  ${CALLBACK_URL}`);
   console.log(`  dashboard URL: ${DASHBOARD_URL}`);
   console.log(`  kite api key:  ${KITE_API_KEY ? KITE_API_KEY.slice(0, 4) + "****" : "MISSING"}`);
-console.log(`  kite secret:   ${KITE_API_SECRET ? "configured" : "MISSING"}`);
+  console.log(`  kite secret:   ${KITE_API_SECRET ? "configured" : "MISSING"}`);
   console.log(`  database:      ${db ? "configured" : "MISSING"}`);
   console.log(
     `  proxy:         ${proxyUrl ? `${ALGOIP_HOST}:${ALGOIP_PORT}` : proxy.error ? "ERROR - " + proxy.error : "not configured"}`
