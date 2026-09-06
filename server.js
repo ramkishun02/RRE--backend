@@ -59,8 +59,8 @@ const DATABASE_URL = readEnv("DATABASE_URL");
 
 /* AlgoIP proxy - canonical names: ALGOIP_* (legacy ALGO_IP_* aliases accepted) */
 const ALGOIP_HOST = readEnv("ALGOIP_HOST", "ALGO_IP_PROXY_HOST", "ALGO_IP_HOST");
-const ALGOIP_PORT = readEnv("ALGOIP_ID", "ALGO_IP_PROXY_PORT", "ALGO_IP_PORT");
-const ALGOIP_USER = readEnv("ALGOIP_NODE", "ALGO_IP_PROXY_USER", "ALGO_IP_USER");
+const ALGOIP_PORT = readEnv("ALGOIP_PORT", "ALGO_IP_PROXY_PORT", "ALGO_IP_PORT");
+const ALGOIP_USER = readEnv("ALGOIP_USER", "ALGO_IP_PROXY_USER", "ALGO_IP_USER");
 const ALGOIP_PASSWORD = readEnv(
   "ALGOIP_PASSWORD",
   "ALGO_IP_PROXY_PASSWORD",
@@ -765,7 +765,7 @@ async function getInstruments() {
     return instrumentsCache.promise;
   }
 
-instrumentsCache.promise = downloadInstruments(token.access_token)
+  instrumentsCache.promise = downloadInstruments(token.access_token)
     .then((items) => {
       instrumentsCache = { items, fetchedAt: Date.now(), promise: null };
       console.log(`[kite] cached ${items.length} NSE instruments`);
@@ -798,8 +798,7 @@ app.get("/health", async (req, res) => {
       kiteConfigured: Boolean(KITE_API_KEY && KITE_API_SECRET),
       databaseConfigured: Boolean(db),
       accessTokenConfigured: Boolean(token?.access_token),
-
-userId: token?.user_id || null,
+      userId: token?.user_id || null,
       loginTime: token?.login_time || null,
       approxTokenExpiry: approximateTokenExpiry(token?.login_time),
       instrumentsCached: instrumentsCache.items.length,
@@ -878,15 +877,22 @@ app.get("/api/proxy-check", async (req, res) => {
   } catch (error) {
     const code = error?.cause?.code || error?.code || "NETWORK_ERROR";
     console.error("[proxy] Proxy check error:", { code, message: error.message });
+    /* Credential-format hint from AlgoIP's own docs: username = aip_live_...
+       user_id, password = aip_sec_... key (algoip.in -> My IPs card). */
+    const credHint =
+      ALGOIP_USER && !ALGOIP_USER.startsWith("aip_live_")
+        ? " Hint: ALGOIP_USER should be your aip_live_... user_id from the " +
+          "My IPs card at algoip.in (not your AlgoIP dashboard login email)."
+        : "";
     return res.status(502).json({
       success: false,
       proxyConfigured: true,
       code,
       message:
         "Render cannot reach the AlgoIP proxy. Check the host, port, username, " +
-        "password, and AlgoIP service status."
+        "password, and AlgoIP service status." + credHint
     });
-}
+  }
 });
 
 app.get("/kite/login", (req, res) => {
@@ -941,7 +947,7 @@ app.get("/kite/callback", async (req, res) => {
       console.log(
         "[kite] callback replay detected; existing session is still valid -> dashboard"
       );
-return res.redirect(`${DASHBOARD_URL}?kite=connected`);
+      return res.redirect(`${DASHBOARD_URL}?kite=connected`);
     }
 
     const body = new URLSearchParams({
@@ -962,9 +968,13 @@ return res.redirect(`${DASHBOARD_URL}?kite=connected`);
         detail: response.detail
       });
       return sendPage(
-"Authentication Error",
+        res,
+        "Authentication Error",
         `Kite session request failed (${response.code}). ${response.detail}. ` +
-          "Check the AlgoIP proxy protocol, host, port, username, and password in Render.",
+          "The AlgoIP proxy refused or could not carry the request to Kite. Check " +
+          "ALGOIP_USER (must be your aip_live_... user_id) and ALGOIP_PASSWORD " +
+          "(must be your aip_sec_... key) from algoip.in -> My IPs, then open " +
+          "/api/proxy-check for a live egress test.",
         false,
         8
       );
@@ -979,7 +989,7 @@ return res.redirect(`${DASHBOARD_URL}?kite=connected`);
         "Kite Authentication Failed",
         `${message} Request tokens are single-use and expire within minutes - ` +
           "use the button below to log in again.",
-false,
+        false,
         5
       );
     }
@@ -996,7 +1006,7 @@ false,
     return res.redirect(`${DASHBOARD_URL}?kite=connected`);
   } catch (error) {
     const code = error?.cause?.code || error?.code || "SERVER_ERROR";
-const detail = error?.message || "Unexpected error during Kite login.";
+    const detail = error?.message || "Unexpected error during Kite login.";
     console.error("[kite] callback error:", { code, detail });
     return sendPage(
       res,
@@ -1015,7 +1025,7 @@ app.get("/api/auth/status", async (req, res) => {
     let alive = false;
 
     if (connected) {
-/* Real liveness check (cached ~30s) so the dashboard learns about the
+      /* Real liveness check (cached ~30s) so the dashboard learns about the
          daily ~6 AM IST expiry without waiting for a failed trade call. */
       alive = await isSessionAlive(token.access_token);
       if (!alive) {
@@ -1068,7 +1078,7 @@ app.get("/api/stocks/search", async (req, res) => {
     const results = items
       .filter((item) => {
         const symbol = item.symbol.toUpperCase();
-const name = item.name.toUpperCase();
+        const name = item.name.toUpperCase();
         return symbol.includes(query) || name.includes(query);
       })
       .slice(0, 20);
@@ -1171,7 +1181,7 @@ app.get("/api/market/quote", async (req, res) => {
         loginUrl: "/kite/login"
       });
     }
-const instrument = `NSE:${symbol}`;
+    const instrument = `NSE:${symbol}`;
     const response = await kiteRequest(
       "/quote/ltp" + `?i=${encodeURIComponent(instrument)}`,
       { headers: kiteAuthHeaders(token.access_token) }
@@ -1191,7 +1201,7 @@ const instrument = `NSE:${symbol}`;
 
     return res.json({
       success: true,
-exchange: "NSE",
+      exchange: "NSE",
       symbol,
       instrument,
       last_price: quote.last_price,
@@ -1212,7 +1222,7 @@ app.post("/api/orders", async (req, res) => {
         message: "KITE_API_KEY is not configured."
       });
     }
-const token = await getStoredToken();
+    const token = await getStoredToken();
     if (!token?.access_token) {
       return res.status(401).json({
         success: false,
@@ -1312,7 +1322,7 @@ app.get("/api/orders/:orderId/status", async (req, res) => {
         success: false,
         code: "KITE_SESSION_EXPIRED",
         message: "Connect Kite before checking order status.",
-loginUrl: "/kite/login"
+        loginUrl: "/kite/login"
       });
     }
 
