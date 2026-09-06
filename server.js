@@ -28,7 +28,8 @@ const path = require("path");
 const crypto = require("crypto");
 const express = require("express");
 const { Pool } = require("pg");
-const { ProxyAgent, setGlobalDispatcher } = require("undici");
+const { ProxyAgent, Agent, setGlobalDispatcher, fetch: undiciFetch } = require("undici");
+const UNDICI_VERSION = require("undici/package.json").version;
 
 /* ------------------------------------------------------------------ */
 /* 1. Configuration                                                    */
@@ -58,14 +59,21 @@ const DATABASE_URL = readEnv("DATABASE_URL");
 
 /* AlgoIP proxy - canonical names: ALGOIP_* (legacy ALGO_IP_* aliases accepted) */
 const ALGOIP_HOST = readEnv("ALGOIP_HOST", "ALGO_IP_PROXY_HOST", "ALGO_IP_HOST");
-const ALGOIP_PORT = readEnv("ALGOIP_ID", "ALGO_IP_PROXY_PORT", "ALGO_IP_PORT");
-const ALGOIP_USER = readEnv("ALGOIP_NODE", "ALGO_IP_PROXY_USER", "ALGO_IP_USER");
+const ALGOIP_PORT = readEnv("ALGOIP_PORT", "ALGO_IP_PROXY_PORT", "ALGO_IP_PORT");
+const ALGOIP_USER = readEnv("ALGOIP_USER", "ALGO_IP_PROXY_USER", "ALGO_IP_USER");
 const ALGOIP_PASSWORD = readEnv(
   "ALGOIP_PASSWORD",
   "ALGO_IP_PROXY_PASSWORD",
   "ALGO_IP_PASSWORD"
 );
 const ALGOIP_ENABLED = readEnv("ALGOIP_ENABLED") !== "false";
+/* The static IPv4 your AlgoIP node egresses from (algoip.in -> My IPs card).
+   When set, /api/proxy-check verifies the actual routed IP against it and
+   FAILS LOUDLY if traffic is bypassing the proxy (e.g. egressing directly
+   from the hosting provider's shared pool). */
+const ALGOIP_EXPECTED_IP = (readEnv("ALGOIP_EXPECTED_IP", "ALGO_IP_EXPECTED_IP") || "")
+  .trim()
+  .toLowerCase();
 
 const KITE_BASE = "https://api.kite.trade";
 const KITE_TIMEOUT_MS = Number(readEnv("KITE_TIMEOUT_MS") || 12000);
@@ -124,17 +132,33 @@ function buildProxyUrl() {
 const proxy = buildProxyUrl();
 const proxyUrl = proxy.url;
 
+/* One shared ProxyAgent for the whole process. Two defence layers:
+   1. setGlobalDispatcher (ambient) - belt and suspenders.
+   2. proxiedFetch() below binds the agent EXPLICITLY to every outbound
+      request, because global-dispatcher wiring has proven unreliable across
+      Node/undici versions in hosting environments (traffic silently
+      egressed from the host's own IP pool instead of the proxy). */
+let proxyAgent = null;
+
 if (proxyUrl) {
   try {
-    setGlobalDispatcher(
-      new ProxyAgent({
-        uri: proxyUrl,
-        connect: { timeout: 10000 },
-        keepAliveTimeout: 60000,
-        keepAliveMaxTimeout: 600000
-      })
+    proxyAgent = new ProxyAgent({
+      uri: proxyUrl,
+      connect: { timeout: 10000 },
+      keepAliveTimeout: 60000,
+      keepAliveMaxTimeout: 600000
+    });
+    setGlobalDispatcher(proxyAgent);
+    console.log(
+      `[proxy] AlgoIP proxy enabled: ${ALGOIP_HOST}:${ALGOIP_PORT}` +
+        (ALGOIP_EXPECTED_IP ? ` (expected egress IP ${ALGOIP_EXPECTED_IP})` : "")
     );
-    console.log(`[proxy] AlgoIP proxy enabled: ${ALGOIP_HOST}:${ALGOIP_PORT}`);
+    if (ALGOIP_EXPECTED_IP) {
+      console.log(
+        "[proxy] Verify egress at /api/proxy-check after boot; it will fail " +
+          "loudly if traffic bypasses the proxy."
+      );
+    }
   } catch (error) {
     proxy.error = error.message;
     console.warn(`[proxy] Failed to initialise AlgoIP proxy: ${error.message}`);
@@ -149,6 +173,25 @@ if (proxyUrl) {
     `[proxy] AlgoIP proxy is not configured (${proxy.reason}). Continuing WITHOUT ` +
       "the proxy. Set ALGOIP_HOST, ALGOIP_PORT, ALGOIP_USER and ALGOIP_PASSWORD in Render."
   );
+}
+
+/* All outbound HTTP goes through this single gate.
+   - If the proxy is configured, the ProxyAgent is bound EXPLICITLY to the
+     request ({ dispatcher }), which cannot be bypassed by fetch()-internal
+     default-dispatcher selection.
+   - Loopback/localhost targets are never proxied (they are local).
+   - Without a proxy configured, requests go direct through one shared Agent.
+   Returns undici's Response, so callers use response.text()/json() as usual. */
+let directAgent = null;
+
+function proxiedFetch(url, options = {}) {
+  const target = String(url);
+  const isLocal =
+    target.startsWith("http://127.0.0.1") ||
+    target.startsWith("http://localhost") ||
+    target.startsWith("http://[::1]");
+  const agent = proxyAgent && !isLocal ? proxyAgent : (directAgent ||= new Agent());
+  return undiciFetch(target, { ...options, dispatcher: agent });
 }
 
 /* ------------------------------------------------------------------ */
@@ -544,7 +587,7 @@ async function kiteRequest(pathname, { method = "GET", headers = {}, body = null
     if (body !== null) requestOptions.body = body;
 
     try {
-      const response = await fetch(`${KITE_BASE}${pathname}`, requestOptions);
+      const response = await proxiedFetch(`${KITE_BASE}${pathname}`, requestOptions);
       const text = await response.text();
       let json = null;
       try {
@@ -766,8 +809,10 @@ userId: token?.user_id || null,
       callbackUrl: CALLBACK_URL,
       dashboardUrl: DASHBOARD_URL,
       proxyConfigured: Boolean(proxyUrl),
+      proxyAgentBound: Boolean(proxyAgent),
       proxyHost: proxyUrl ? ALGOIP_HOST : null,
       proxyPort: proxyUrl ? Number(ALGOIP_PORT) : null,
+      proxyExpectedIp: ALGOIP_EXPECTED_IP || null,
       proxyError: proxy.error || null,
       timestamp: new Date().toISOString()
     });
@@ -787,20 +832,48 @@ app.get("/api/proxy-check", async (req, res) => {
   }
 
   try {
-    const response = await fetch("https://ip64.algoip.in/all?format=json", {
+    const response = await proxiedFetch("https://ip64.algoip.in/all?format=json", {
       signal: AbortSignal.timeout(10000)
     });
     const data = await response.json().catch(() => ({}));
-    return res.status(response.ok ? 200 : 
-502).json({
-      success: response.ok,
+    const routedIp = (data.ip || "").trim().toLowerCase();
+
+    /* Self-diagnosis: the echoed IP must be the AlgoIP static IP when one is
+       declared. A hosting-provider IP here means traffic bypassed the proxy
+       (the exact failure that produced a shared Render egress IP in a
+       Zerodha whitelist attempt and a silent mismatch for days). */
+    const expectedIp = ALGOIP_EXPECTED_IP || null;
+    const ipMatches = Boolean(expectedIp && routedIp && routedIp === expectedIp);
+    const looksLikeHostingEgress =
+      routedIp && expectedIp && routedIp !== expectedIp
+        ? "outbound traffic is NOT egressing through the AlgoIP proxy - it is " +
+          "bypassing it and using this host's own IP. Do NOT whitelist this " +
+          "IP; fix the proxy routing first."
+        : null;
+
+    const ok = response.ok && (!expectedIp || ipMatches);
+    return res.status(ok ? 200 : 502).json({
+      success: ok,
       proxyConfigured: true,
-      routedIp: data.ip || null,
+      routedIp: routedIp || null,
+      expectedIp,
+      ipMatches,
       country: data.country || null,
       city: data.city || null,
-      message: response.ok
-        ? "AlgoIP proxy routing is working."
-        : "AlgoIP proxy verification failed."
+      runtime: {
+        node: process.version,
+        undici: UNDICI_VERSION,
+        proxyHost: ALGOIP_HOST,
+        proxyPort: Number(ALGOIP_PORT)
+      },
+      warning: looksLikeHostingEgress,
+      message: !response.ok
+        ? "AlgoIP echo service unreachable."
+        : ok
+          ? "AlgoIP proxy routing is working and egress matches the expected static IP."
+          : expectedIp
+            ? "PROXY BYPASS DETECTED: routed IP does not match the expected AlgoIP static IP."
+            : "Traffic is flowing, but ALGOIP_EXPECTED_IP is not set - set it in Render so this check can verify egress."
     });
   } catch (error) {
     const code = error?.cause?.code || error?.code || "NETWORK_ERROR";
@@ -1361,8 +1434,8 @@ function startKeepAlive() {
 
   const ping = async () => {
     try {
-      await fetch(`${BASE_URL}/health`, {
-signal: AbortSignal.timeout(10000) });
+      await proxiedFetch(`${BASE_URL}/health`, {
+        signal: AbortSignal.timeout(10000) });
     } catch (_) {
       /* Instance may be asleep or offline - ignore. */
     }
@@ -1396,6 +1469,9 @@ function logStartupBanner() {
   console.log(
     `  proxy:         ${proxyUrl ? `${ALGOIP_HOST}:${ALGOIP_PORT}` : proxy.error ? "ERROR - " + proxy.error : "not configured"}`
   );
+  console.log(`  proxy agent:   ${proxyAgent ? "explicitly bound to all outbound requests" : "NOT active"}`);
+  console.log(`  expected IP:   ${ALGOIP_EXPECTED_IP || "(not set - /api/proxy-check cannot verify egress)"}`);
+  console.log(`  runtime:       node ${process.version}, undici ${UNDICI_VERSION}`);
   console.log(`  kite timeout:  ${KITE_TIMEOUT_MS}ms (retries: ${KITE_MAX_RETRIES})`);
   console.log("==============================================");
 }
