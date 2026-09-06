@@ -1,25 +1,5 @@
-
-
-                       
-       
-
-"use strict";
-
 /*
- * Kite Connect backend (Render-ready)
- *
- * Stability fixes in this version:
- *  1. AlgoIP proxy config no longer crashes (fixed ALGOIP_PASSWORD typo, unified
- *     env names, graceful degradation when misconfigured).
- *  2. Every outbound Kite call has a timeout + bounded retries with backoff.
- *  3. Kite session expiry (~6 AM IST daily, regulatory) is detected and handled:
- *     dead tokens are cleared automatically and endpoints return a clean
- *     KITE_SESSION_EXPIRED 401 with a loginUrl instead of random failures.
- *  4. /kite/callback is idempotent: replayed/duplicate request_tokens no longer
- *     produce scary errors (request_token is single-use and lives minutes).
- *  5. HTTP server tuned for proxies (keepAliveTimeout) + graceful SIGTERM
- *     shutdown so Render redeploys don't drop in-flight requests.
- *  6. Instrument list is cached with a TTL and in-flight de-duplication, token
+TL and in-flight de-duplication, token
  *     lookups are cached briefly, and a lightweight keep-alive pinger reduces
  *     cold-start disruption on the Render free tier.
  */
@@ -58,8 +38,8 @@ const DATABASE_URL = readEnv("DATABASE_URL");
 
 /* AlgoIP proxy - canonical names: ALGOIP_* (legacy ALGO_IP_* aliases accepted) */
 const ALGOIP_HOST = readEnv("ALGOIP_HOST", "ALGO_IP_PROXY_HOST", "ALGO_IP_HOST");
-const ALGOIP_PORT = readEnv("ALGOIP_ID", "ALGO_IP_PROXY_PORT", "ALGO_IP_PORT");
-const ALGOIP_USER = readEnv("ALGOIP_NODE", "ALGO_IP_PROXY_USER", "ALGO_IP_USER");
+const ALGOIP_PORT = readEnv("ALGOIP_PORT", "ALGO_IP_PROXY_PORT", "ALGO_IP_PORT");
+const ALGOIP_USER = readEnv("ALGOIP_USER", "ALGO_IP_PROXY_USER", "ALGO_IP_USER");
 const ALGOIP_PASSWORD = readEnv(
   "ALGOIP_PASSWORD",
   "ALGO_IP_PROXY_PASSWORD",
@@ -123,7 +103,7 @@ function buildProxyUrl() {
 
 const proxy = buildProxyUrl();
 const proxyUrl = proxy.url;
-
+/*
 if (proxyUrl) {
   try {
     setGlobalDispatcher(
@@ -143,13 +123,28 @@ if (proxyUrl) {
 } else if (proxy.error) {
   /* Misconfiguration is logged loudly but is NOT fatal: the app still boots,
      serves the dashboard, and /health reports exactly what is wrong. */
-  console.warn(`[proxy] ${proxy.error} Continuing WITHOUT the proxy.`);
+      /* console.warn(`[proxy] ${proxy.error}     Continuing WITHOUT the proxy.`);
 } else if (ALGOIP_ENABLED) {
   console.warn(
     `[proxy] AlgoIP proxy is not configured (${proxy.reason}). Continuing WITHOUT ` +
       "the proxy. Set ALGOIP_HOST, ALGOIP_PORT, ALGOIP_USER and ALGOIP_PASSWORD in Render."
   );
-}
+}*/
+
+const got = require('got');
+const { HttpProxyAgent, HttpsProxyAgent } = require('hpagent');
+
+const proxyUrl = 'http://your_client_id:your_client_secret@dc46-mum-01.algoip.in:443';
+
+got('https://ip64.algoip.in/all?format=json', {
+  agent: {
+    http: new HttpProxyAgent({ proxy: proxyUrl }),
+    https: new HttpsProxyAgent({ proxy: proxyUrl })
+  }
+})
+  .json()
+  .then(data => console.log('Got Client verified details:', data))
+  .catch(err => console.error(err));
 
 /* ------------------------------------------------------------------ */
 /* 3. Express app                                                      */
