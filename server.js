@@ -102,7 +102,7 @@ function buildProxyUrl() {
 }
 
 const proxy = buildProxyUrl();
-const proxyUrl = proxy.url;
+//const proxyUrl = proxy.url;
 /*
 if (proxyUrl) {
   try {
