@@ -28,8 +28,7 @@ const path = require("path");
 const crypto = require("crypto");
 const express = require("express");
 const { Pool } = require("pg");
-const { ProxyAgent, Agent, setGlobalDispatcher, fetch: undiciFetch } = require("undici");
-const UNDICI_VERSION = require("undici/package.json").version;
+const { ProxyAgent, setGlobalDispatcher } = require("undici");
 
 /* ------------------------------------------------------------------ */
 /* 1. Configuration                                                    */
@@ -59,21 +58,14 @@ const DATABASE_URL = readEnv("DATABASE_URL");
 
 /* AlgoIP proxy - canonical names: ALGOIP_* (legacy ALGO_IP_* aliases accepted) */
 const ALGOIP_HOST = readEnv("ALGOIP_HOST", "ALGO_IP_PROXY_HOST", "ALGO_IP_HOST");
-const ALGOIP_PORT = readEnv("ALGOIP_ID", "ALGO_IP_PROXY_PORT", "ALGO_IP_PORT");
-const ALGOIP_USER = readEnv("ALGOIP_NODE", "ALGO_IP_PROXY_USER", "ALGO_IP_USER");
+const ALGOIP_PORT = readEnv("ALGOIP_PORT", "ALGO_IP_PROXY_PORT", "ALGO_IP_PORT");
+const ALGOIP_USER = readEnv("ALGOIP_USER", "ALGO_IP_PROXY_USER", "ALGO_IP_USER");
 const ALGOIP_PASSWORD = readEnv(
   "ALGOIP_PASSWORD",
   "ALGO_IP_PROXY_PASSWORD",
   "ALGO_IP_PASSWORD"
 );
 const ALGOIP_ENABLED = readEnv("ALGOIP_ENABLED") !== "false";
-/* The static IPv4 your AlgoIP node egresses from (algoip.in -> My IPs card).
-   When set, /api/proxy-check verifies the actual routed IP against it and
-   FAILS LOUDLY if traffic is bypassing the proxy (e.g. egressing directly
-   from the hosting provider's shared pool). */
-const ALGOIP_EXPECTED_IP = (readEnv("ALGOIP_EXPECTED_IP", "ALGO_IP_EXPECTED_IP") || "")
-  .trim()
-  .toLowerCase();
 
 const KITE_BASE = "https://api.kite.trade";
 const KITE_TIMEOUT_MS = Number(readEnv("KITE_TIMEOUT_MS") || 12000);
@@ -132,33 +124,17 @@ function buildProxyUrl() {
 const proxy = buildProxyUrl();
 const proxyUrl = proxy.url;
 
-/* One shared ProxyAgent for the whole process. Two defence layers:
-   1. setGlobalDispatcher (ambient) - belt and suspenders.
-   2. proxiedFetch() below binds the agent EXPLICITLY to every outbound
-      request, because global-dispatcher wiring has proven unreliable across
-      Node/undici versions in hosting environments (traffic silently
-      egressed from the host's own IP pool instead of the proxy). */
-let proxyAgent = null;
-
 if (proxyUrl) {
   try {
-    proxyAgent = new ProxyAgent({
-      uri: proxyUrl,
-      connect: { timeout: 10000 },
-      keepAliveTimeout: 60000,
-      keepAliveMaxTimeout: 600000
-    });
-    setGlobalDispatcher(proxyAgent);
-    console.log(
-      `[proxy] AlgoIP proxy enabled: ${ALGOIP_HOST}:${ALGOIP_PORT}` +
-        (ALGOIP_EXPECTED_IP ? ` (expected egress IP ${ALGOIP_EXPECTED_IP})` : "")
+    setGlobalDispatcher(
+      new ProxyAgent({
+        uri: proxyUrl,
+        connect: { timeout: 10000 },
+        keepAliveTimeout: 60000,
+        keepAliveMaxTimeout: 600000
+      })
     );
-    if (ALGOIP_EXPECTED_IP) {
-      console.log(
-        "[proxy] Verify egress at /api/proxy-check after boot; it will fail " +
-          "loudly if traffic bypasses the proxy."
-      );
-    }
+    console.log(`[proxy] AlgoIP proxy enabled: ${ALGOIP_HOST}:${ALGOIP_PORT}`);
   } catch (error) {
     proxy.error = error.message;
     console.warn(`[proxy] Failed to initialise AlgoIP proxy: ${error.message}`);
@@ -173,25 +149,6 @@ if (proxyUrl) {
     `[proxy] AlgoIP proxy is not configured (${proxy.reason}). Continuing WITHOUT ` +
       "the proxy. Set ALGOIP_HOST, ALGOIP_PORT, ALGOIP_USER and ALGOIP_PASSWORD in Render."
   );
-}
-
-/* All outbound HTTP goes through this single gate.
-   - If the proxy is configured, the ProxyAgent is bound EXPLICITLY to the
-     request ({ dispatcher }), which cannot be bypassed by fetch()-internal
-     default-dispatcher selection.
-   - Loopback/localhost targets are never proxied (they are local).
-   - Without a proxy configured, requests go direct through one shared Agent.
-   Returns undici's Response, so callers use response.text()/json() as usual. */
-let directAgent = null;
-
-function proxiedFetch(url, options = {}) {
-  const target = String(url);
-  const isLocal =
-    target.startsWith("http://127.0.0.1") ||
-    target.startsWith("http://localhost") ||
-    target.startsWith("http://[::1]");
-  const agent = proxyAgent && !isLocal ? proxyAgent : (directAgent ||= new Agent());
-  return undiciFetch(target, { ...options, dispatcher: agent });
 }
 
 /* ------------------------------------------------------------------ */
@@ -356,69 +313,25 @@ function serveIndex(res) {
   });
 }
 
-/* Kite returns login_time as an IST string ("YYYY-MM-DD HH:MM:SS"), but the
-   database column type decides what comes back on read: a TEXT column returns
-   the string, while timestamp/timestamptz columns return a JS Date. This
-   helper normalises every variant into a UTC epoch instant (or null). */
-function loginTimeToInstantMs(loginTime) {
-  if (loginTime instanceof Date) {
-    const ms = loginTime.getTime();
-    return Number.isFinite(ms) ? ms : null;
-  }
-
-  const raw = String(loginTime ?? "").trim();
-  if (!raw) return null;
-
-  /* ISO 8601 with an explicit timezone (e.g. "2026-09-05T19:13:05.000Z" or
-     "2026-09-05 19:13:05+00:00") - the instant is unambiguous, parse direct. */
-  if (
-    /\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})/.test(raw)
-  ) {
-    const ms = Date.parse(raw);
-    return Number.isFinite(ms) ? ms : null;
-  }
-
-  /* Kite's raw format carries no timezone marker and is IST (UTC+5:30). */
-  const match = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/.exec(raw);
+/* Kite login_time is IST "YYYY-MM-DD HH:MM:SS". Access tokens expire around
+   6 AM IST the following day (regulatory requirement per Kite docs). */
+function approximateTokenExpiry(loginTime) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/.exec(
+    String(loginTime || "")
+  );
   if (!match) return null;
 
-  return (
-    Date.UTC(
-      Number(match[1]),
-      Number(match[2]) - 1,
-      Number(match[3]),
-      Number(match[4]),
-      Number(match[5]),
-      Number(match[6])
-    ) - IST_OFFSET_MS
-  );
-}
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
 
-/* Canonical storage form: UTC ISO string. Safe for TEXT columns (readable,
-   self-describing) and for timestamp/timestamptz columns (Postgres parses the
-   Z suffix as UTC, so no silent timezone shifting can occur). */
-function normalizeLoginTime(loginTime) {
-  const ms = loginTimeToInstantMs(loginTime);
-  return ms === null ? null : new Date(ms).toISOString();
-}
-
-/* Kite access tokens expire around 6 AM IST the following day (regulatory
-   requirement per Kite docs). Returns the next 6 AM IST boundary after the
-   login instant, in UTC ISO format, or null when the login time is unknown. */
-function approximateTokenExpiry(loginTime) {
-  const loginUtcMs = loginTimeToInstantMs(loginTime);
-  if (loginUtcMs === null) return null;
-
-  const istClock = new Date(loginUtcMs + IST_OFFSET_MS);
+  const loginUtcMs =
+    Date.UTC(year, month - 1, day, hour, minute, second) - IST_OFFSET_MS;
   let expiryUtcMs =
-    Date.UTC(
-      istClock.getUTCFullYear(),
-      istClock.getUTCMonth(),
-      istClock.getUTCDate(),
-      6,
-      0,
-      0
-    ) - IST_OFFSET_MS;
+    Date.UTC(year, month - 1, day, 6, 0, 0) - IST_OFFSET_MS;
   if (loginUtcMs >= expiryUtcMs) {
     expiryUtcMs += 24 * 60 * 60 * 1000;
   }
@@ -522,12 +435,6 @@ async function getStoredToken(force = false) {
     LIMIT 1
   `);
   const value = result.rows[0] || null;
-  if (value) {
-    /* The column type decides the JS type: TEXT gives Kite's IST string,
-       timestamp(tz) gives a Date. Normalise so every consumer downstream
-       (auth status, health, expiry math) sees a canonical UTC ISO string. */
-    value.login_time = normalizeLoginTime(value.login_time) ?? value.login_time;
-  }
   tokenCache = { value, fetchedAt: Date.now() };
   return value;
 }
@@ -587,7 +494,7 @@ async function kiteRequest(pathname, { method = "GET", headers = {}, body = null
     if (body !== null) requestOptions.body = body;
 
     try {
-      const response = await proxiedFetch(`${KITE_BASE}${pathname}`, requestOptions);
+      const response = await fetch(`${KITE_BASE}${pathname}`, requestOptions);
       const text = await response.text();
       let json = null;
       try {
@@ -765,7 +672,7 @@ async function getInstruments() {
     return instrumentsCache.promise;
   }
 
-  instrumentsCache.promise = downloadInstruments(token.access_token)
+instrumentsCache.promise = downloadInstruments(token.access_token)
     .then((items) => {
       instrumentsCache = { items, fetchedAt: Date.now(), promise: null };
       console.log(`[kite] cached ${items.length} NSE instruments`);
@@ -798,7 +705,8 @@ app.get("/health", async (req, res) => {
       kiteConfigured: Boolean(KITE_API_KEY && KITE_API_SECRET),
       databaseConfigured: Boolean(db),
       accessTokenConfigured: Boolean(token?.access_token),
-      userId: token?.user_id || null,
+
+userId: token?.user_id || null,
       loginTime: token?.login_time || null,
       approxTokenExpiry: approximateTokenExpiry(token?.login_time),
       instrumentsCached: instrumentsCache.items.length,
@@ -808,10 +716,8 @@ app.get("/health", async (req, res) => {
       callbackUrl: CALLBACK_URL,
       dashboardUrl: DASHBOARD_URL,
       proxyConfigured: Boolean(proxyUrl),
-      proxyAgentBound: Boolean(proxyAgent),
       proxyHost: proxyUrl ? ALGOIP_HOST : null,
       proxyPort: proxyUrl ? Number(ALGOIP_PORT) : null,
-      proxyExpectedIp: ALGOIP_EXPECTED_IP || null,
       proxyError: proxy.error || null,
       timestamp: new Date().toISOString()
     });
@@ -831,68 +737,33 @@ app.get("/api/proxy-check", async (req, res) => {
   }
 
   try {
-    const response = await proxiedFetch("https://ip64.algoip.in/all?format=json", {
+    const response = await fetch("https://ip64.algoip.in/all?format=json", {
       signal: AbortSignal.timeout(10000)
     });
     const data = await response.json().catch(() => ({}));
-    const routedIp = (data.ip || "").trim().toLowerCase();
-
-    /* Self-diagnosis: the echoed IP must be the AlgoIP static IP when one is
-       declared. A hosting-provider IP here means traffic bypassed the proxy
-       (the exact failure that produced a shared Render egress IP in a
-       Zerodha whitelist attempt and a silent mismatch for days). */
-    const expectedIp = ALGOIP_EXPECTED_IP || null;
-    const ipMatches = Boolean(expectedIp && routedIp && routedIp === expectedIp);
-    const looksLikeHostingEgress =
-      routedIp && expectedIp && routedIp !== expectedIp
-        ? "outbound traffic is NOT egressing through the AlgoIP proxy - it is " +
-          "bypassing it and using this host's own IP. Do NOT whitelist this " +
-          "IP; fix the proxy routing first."
-        : null;
-
-    const ok = response.ok && (!expectedIp || ipMatches);
-    return res.status(ok ? 200 : 502).json({
-      success: ok,
+    return res.status(response.ok ? 200 : 
+502).json({
+      success: response.ok,
       proxyConfigured: true,
-      routedIp: routedIp || null,
-      expectedIp,
-      ipMatches,
+      routedIp: data.ip || null,
       country: data.country || null,
       city: data.city || null,
-      runtime: {
-        node: process.version,
-        undici: UNDICI_VERSION,
-        proxyHost: ALGOIP_HOST,
-        proxyPort: Number(ALGOIP_PORT)
-      },
-      warning: looksLikeHostingEgress,
-      message: !response.ok
-        ? "AlgoIP echo service unreachable."
-        : ok
-          ? "AlgoIP proxy routing is working and egress matches the expected static IP."
-          : expectedIp
-            ? "PROXY BYPASS DETECTED: routed IP does not match the expected AlgoIP static IP."
-            : "Traffic is flowing, but ALGOIP_EXPECTED_IP is not set - set it in Render so this check can verify egress."
+      message: response.ok
+        ? "AlgoIP proxy routing is working."
+        : "AlgoIP proxy verification failed."
     });
   } catch (error) {
     const code = error?.cause?.code || error?.code || "NETWORK_ERROR";
     console.error("[proxy] Proxy check error:", { code, message: error.message });
-    /* Credential-format hint from AlgoIP's own docs: username = aip_live_...
-       user_id, password = aip_sec_... key (algoip.in -> My IPs card). */
-    const credHint =
-      ALGOIP_USER && !ALGOIP_USER.startsWith("aip_live_")
-        ? " Hint: ALGOIP_USER should be your aip_live_... user_id from the " +
-          "My IPs card at algoip.in (not your AlgoIP dashboard login email)."
-        : "";
     return res.status(502).json({
       success: false,
       proxyConfigured: true,
       code,
       message:
         "Render cannot reach the AlgoIP proxy. Check the host, port, username, " +
-        "password, and AlgoIP service status." + credHint
+        "password, and AlgoIP service status."
     });
-  }
+}
 });
 
 app.get("/kite/login", (req, res) => {
@@ -947,7 +818,7 @@ app.get("/kite/callback", async (req, res) => {
       console.log(
         "[kite] callback replay detected; existing session is still valid -> dashboard"
       );
-      return res.redirect(`${DASHBOARD_URL}?kite=connected`);
+return res.redirect(`${DASHBOARD_URL}?kite=connected`);
     }
 
     const body = new URLSearchParams({
@@ -968,13 +839,9 @@ app.get("/kite/callback", async (req, res) => {
         detail: response.detail
       });
       return sendPage(
-        res,
-        "Authentication Error",
+"Authentication Error",
         `Kite session request failed (${response.code}). ${response.detail}. ` +
-          "The AlgoIP proxy refused or could not carry the request to Kite. Check " +
-          "ALGOIP_USER (must be your aip_live_... user_id) and ALGOIP_PASSWORD " +
-          "(must be your aip_sec_... key) from algoip.in -> My IPs, then open " +
-          "/api/proxy-check for a live egress test.",
+          "Check the AlgoIP proxy protocol, host, port, username, and password in Render.",
         false,
         8
       );
@@ -989,7 +856,7 @@ app.get("/kite/callback", async (req, res) => {
         "Kite Authentication Failed",
         `${message} Request tokens are single-use and expire within minutes - ` +
           "use the button below to log in again.",
-        false,
+false,
         5
       );
     }
@@ -997,7 +864,7 @@ app.get("/kite/callback", async (req, res) => {
     await saveKiteToken(
       result.data.access_token,
       result.data.user_id,
-      normalizeLoginTime(result.data.login_time)
+      result.data.login_time
     );
     console.log(
       `[kite] login OK (user ${result.data.user_id}); token saved and valid until ~` +
@@ -1006,7 +873,7 @@ app.get("/kite/callback", async (req, res) => {
     return res.redirect(`${DASHBOARD_URL}?kite=connected`);
   } catch (error) {
     const code = error?.cause?.code || error?.code || "SERVER_ERROR";
-    const detail = error?.message || "Unexpected error during Kite login.";
+const detail = error?.message || "Unexpected error during Kite login.";
     console.error("[kite] callback error:", { code, detail });
     return sendPage(
       res,
@@ -1025,7 +892,7 @@ app.get("/api/auth/status", async (req, res) => {
     let alive = false;
 
     if (connected) {
-      /* Real liveness check (cached ~30s) so the dashboard learns about the
+/* Real liveness check (cached ~30s) so the dashboard learns about the
          daily ~6 AM IST expiry without waiting for a failed trade call. */
       alive = await isSessionAlive(token.access_token);
       if (!alive) {
@@ -1078,7 +945,7 @@ app.get("/api/stocks/search", async (req, res) => {
     const results = items
       .filter((item) => {
         const symbol = item.symbol.toUpperCase();
-        const name = item.name.toUpperCase();
+const name = item.name.toUpperCase();
         return symbol.includes(query) || name.includes(query);
       })
       .slice(0, 20);
@@ -1181,7 +1048,7 @@ app.get("/api/market/quote", async (req, res) => {
         loginUrl: "/kite/login"
       });
     }
-    const instrument = `NSE:${symbol}`;
+const instrument = `NSE:${symbol}`;
     const response = await kiteRequest(
       "/quote/ltp" + `?i=${encodeURIComponent(instrument)}`,
       { headers: kiteAuthHeaders(token.access_token) }
@@ -1201,7 +1068,7 @@ app.get("/api/market/quote", async (req, res) => {
 
     return res.json({
       success: true,
-      exchange: "NSE",
+exchange: "NSE",
       symbol,
       instrument,
       last_price: quote.last_price,
@@ -1222,7 +1089,7 @@ app.post("/api/orders", async (req, res) => {
         message: "KITE_API_KEY is not configured."
       });
     }
-    const token = await getStoredToken();
+const token = await getStoredToken();
     if (!token?.access_token) {
       return res.status(401).json({
         success: false,
@@ -1322,7 +1189,7 @@ app.get("/api/orders/:orderId/status", async (req, res) => {
         success: false,
         code: "KITE_SESSION_EXPIRED",
         message: "Connect Kite before checking order status.",
-        loginUrl: "/kite/login"
+loginUrl: "/kite/login"
       });
     }
 
@@ -1444,8 +1311,8 @@ function startKeepAlive() {
 
   const ping = async () => {
     try {
-      await proxiedFetch(`${BASE_URL}/health`, {
-        signal: AbortSignal.timeout(10000) });
+      await fetch(`${BASE_URL}/health`, {
+signal: AbortSignal.timeout(10000) });
     } catch (_) {
       /* Instance may be asleep or offline - ignore. */
     }
@@ -1479,9 +1346,6 @@ function logStartupBanner() {
   console.log(
     `  proxy:         ${proxyUrl ? `${ALGOIP_HOST}:${ALGOIP_PORT}` : proxy.error ? "ERROR - " + proxy.error : "not configured"}`
   );
-  console.log(`  proxy agent:   ${proxyAgent ? "explicitly bound to all outbound requests" : "NOT active"}`);
-  console.log(`  expected IP:   ${ALGOIP_EXPECTED_IP || "(not set - /api/proxy-check cannot verify egress)"}`);
-  console.log(`  runtime:       node ${process.version}, undici ${UNDICI_VERSION}`);
   console.log(`  kite timeout:  ${KITE_TIMEOUT_MS}ms (retries: ${KITE_MAX_RETRIES})`);
   console.log("==============================================");
 }
