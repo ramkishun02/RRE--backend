@@ -82,7 +82,7 @@ function errorChain(err) {
   return chain;
 }
 
-function classifyProxyError(err) {
+/*function classifyProxyError(err) {
   const chain = errorChain(err);
   const flat = chain.map((x) => ({
     name: x.name || '',
@@ -181,7 +181,7 @@ class ProxyAuthError extends Error {
 class ProxyNetworkError extends Error {
   constructor(report) { super(report.title); this.name = 'ProxyNetworkError'; this.kind = report.kind; this.report = report; }
 }
-
+*/
 // ---------------------------------------------------------------------------
 // Proxy layer: IPv4 pinning + fallback chain
 // ---------------------------------------------------------------------------
