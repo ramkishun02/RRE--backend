@@ -904,7 +904,7 @@ app.get("/kite/login", (req, res) => {
 /* Kite redirects here after a successful login. The request_token is
    SINGLE USE and valid for only a few minutes, so this route must survive
    replays, refreshes and double-fires gracefully. */
-app.get("/kite/callback", async (req, res) => {
+app.get("/kite/callback", async (req, res, next) => {
   const requestToken = String(req.query.request_token || "").trim();
   const status = String(req.query.status || "");
 
