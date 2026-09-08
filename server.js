@@ -59,14 +59,14 @@ const DATABASE_URL = readEnv("DATABASE_URL");
 
 /* AlgoIP proxy - canonical names: ALGOIP_* (legacy ALGO_IP_* aliases accepted) */
 const ALGOIP_HOST = readEnv("ALGOIP_HOST", "ALGO_IP_PROXY_HOST", "ALGO_IP_HOST");
-const ALGOIP_PORT = readEnv("ALGOIP_PORT", "ALGO_IP_PROXY_PORT", "ALGO_IP_PORT");
-const ALGOIP_USER = readEnv("ALGOIP_USER", "ALGO_IP_PROXY_USER", "ALGO_IP_USER");
+const ALGOIP_PORT = readEnv("ALGOIP_ID", "ALGO_IP_PROXY_PORT", "ALGO_IP_PORT");
+const ALGOIP_USER = readEnv("ALGOIP_NODE", "ALGO_IP_PROXY_USER", "ALGO_IP_USER");
 const ALGOIP_PASSWORD = readEnv(
   "ALGOIP_PASSWORD",
   "ALGO_IP_PROXY_PASSWORD",
   "ALGO_IP_PASSWORD"
 );
-const ALGOIP_ENABLED = readEnv("ALGOIP_ENABLED") !== "false";
+const ALGOIP_ENABLED = readEnv("ALGOIP_PER") !== "false";
 /* The static IPv4 your AlgoIP node egresses from (algoip.in -> My IPs card).
    When set, /api/proxy-check verifies the actual routed IP against it and
    FAILS LOUDLY if traffic is bypassing the proxy (e.g. egressing directly
