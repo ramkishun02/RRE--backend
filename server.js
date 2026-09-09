@@ -30,10 +30,10 @@ const KITE_BASE = 'https://api.kite.trade';
 const KITE_LOGIN_BASE = 'https://kite.zerodha.com/connect/login';
 
 const ALGOIP_HOST = process.env.ALGOIP_HOST || '';
-const ALGOIP_PORT = process.env.ALGOIP_PORT || '';
-const ALGOIP_USER = process.env.ALGOIP_USER || '';
+const ALGOIP_PORT = process.env.ALGOIP_ID || '';
+const ALGOIP_USER = process.env.ALGOIP_NODE || '';
 const ALGOIP_PASSWORD = process.env.ALGOIP_PASSWORD || '';
-const ALGOIP_EXPECTED_IP = process.env.ALGOIP_EXPECTED_IP || '';
+const ALGOIP_EXPECTED_IP = process.env.ALGOIP_PI || '';
 
 const DATABASE_URL = process.env.DATABASE_URL || '';
 
