@@ -33,10 +33,10 @@ const KITE_BASE = 'https://api.kite.trade';
 const KITE_LOGIN_BASE = 'https://kite.zerodha.com/connect/login';
 
 const ALGOIP_HOST = process.env.ALGOIP_HOST || '';
-const ALGOIP_PORT = process.env.ALGOIP_ID || '';
-const ALGOIP_USER = process.env.ALGOIP_NODE || '';
+const ALGOIP_PORT = process.env.ALGOIP_PORT || '';
+const ALGOIP_USER = process.env.ALGOIP_USER || '';
 const ALGOIP_PASSWORD = process.env.ALGOIP_PASSWORD || '';
-const ALGOIP_EXPECTED_IP = process.env.ALGOIP_PI || '';
+const ALGOIP_EXPECTED_IP = process.env.ALGOIP_EXPECTED_IP || '';
 // Optional override: "http" or "https". If unset we infer from the port —
 // 443/8443 imply the CONNECT hop itself is TLS-wrapped.
 const ALGOIP_PROTOCOL = (process.env.ALGOIP_PROTOCOL || '').replace(/[:/]/g, '').toLowerCase();
@@ -206,20 +206,50 @@ function buildDispatcher() {
 }
 
 /**
- * Self-negotiate the CONNECT scheme, once. A connect-level failure (timeout,
- * socket error, TLS mismatch) means we picked the wrong scheme; a CONNECT
- * rejection (401/403) means the scheme was RIGHT and only auth/ACL failed, so
- * flipping would be actively wrong. Returns true if a flip happened.
+ * Is this error plausibly a WRONG-SCHEME error?
+ *
+ * A scheme mismatch produces a TLS/protocol complaint or an immediate reset:
+ * the peer answered, it just spoke a different language. A silent ETIMEDOUT is
+ * the opposite — nothing answered at all, which means dropped packets (firewall
+ * or source-IP allowlist), and no amount of scheme flipping will help. Flipping
+ * on a timeout is actively harmful: it doubles the wait and blames the scheme
+ * for what is really an allowlist problem.
+ */
+function isSchemeSuspect(err) {
+  const d = errDetail(err);
+  if (/ETIMEDOUT|Connect Timeout|DEADLINE_EXCEEDED|ENOTFOUND|EAI_AGAIN|ECONNREFUSED/i.test(d)) return false;
+  return /EPROTO|ERR_SSL|SSL routines|wrong version number|packet length too long|record layer|ECONNRESET|socket hang up|other side closed|UND_ERR_SOCKET/i.test(
+    d
+  );
+}
+
+/**
+ * Self-negotiate the CONNECT scheme, once. A CONNECT rejection (401/403) means
+ * the scheme was RIGHT and only auth/ACL failed. A timeout means nothing
+ * answered. Only a genuine protocol mismatch justifies a flip.
+ * Returns true if a flip happened.
  */
 async function maybeFlipScheme(err) {
   if (schemeLatched || schemeFlipTried) return false;
   if (!proxyUri()) return false;
   if (classifyTunnelError(err)) return false; // proxy answered — scheme is fine
 
+  if (!isSchemeSuspect(err)) {
+    if (/ETIMEDOUT|Connect Timeout|DEADLINE_EXCEEDED/i.test(errDetail(err))) {
+      log(
+        'WARN',
+        `CONNECT to ${proxyUri()} timed out with no response — NOT a scheme problem. ` +
+          'Packets are being dropped, which means the proxy is not allowlisting this server. ' +
+          'Open /api/diagnostics to see the egress IP to allowlist at AlgoIP.'
+      );
+    }
+    return false;
+  }
+
   schemeFlipTried = true;
   const from = activeScheme;
   activeScheme = from === 'https' ? 'http' : 'https';
-  log('WARN', `CONNECT failed over ${from.toUpperCase()} (${errDetail(err)}) — retrying over ${activeScheme.toUpperCase()}`);
+  log('WARN', `CONNECT failed over ${from.toUpperCase()} with a protocol error (${errDetail(err)}) — retrying over ${activeScheme.toUpperCase()}`);
 
   const old = dispatcher;
   dispatcher = buildDispatcher();
@@ -859,6 +889,25 @@ app.get('/api/proxy-check', asyncRoute(async (req, res) => {
       });
     }
 
+    // A timeout means nothing answered — probing the other scheme just doubles
+    // the wait and points the blame in the wrong direction. Answer immediately.
+    if (!isSchemeSuspect(primaryErr)) {
+      const timedOut = /ETIMEDOUT|Connect Timeout|DEADLINE_EXCEEDED/i.test(errDetail(primaryErr));
+      return res.status(502).json({
+        code: timedOut ? 'PROXY_PACKETS_DROPPED' : 'PROXY_UNREACHABLE',
+        message: errDetail(primaryErr),
+        proxyReached: false,
+        proxyConfigured: true,
+        proxyUri: configuredUri,
+        scheme: primaryScheme,
+        schemeProbed: false,
+        credentialsSupplied: Boolean(proxyAuthToken()),
+        hint: timedOut
+          ? 'The connection timed out with NO response, so this is neither a scheme nor a credentials problem — the proxy never answered. Your packets are being dropped, which almost always means AlgoIP is not allowlisting this server. Open /api/diagnostics to see the exact egress IP to add to the AlgoIP panel (Render has several outbound IPs — add them all).'
+          : 'The proxy could not be reached and the failure is not a protocol mismatch. Check ALGOIP_HOST and ALGOIP_PORT. Open /api/diagnostics for a DNS and raw-TCP breakdown.',
+      });
+    }
+
     // Attempt 2: the opposite scheme, on a throwaway agent.
     let altAgent = null;
     try {
@@ -968,9 +1017,12 @@ app.get('/kite/callback', asyncRoute(async (req, res) => {
     let hint = '';
     if (tunnel) {
       hint = ` — ${tunnel.message} ${tunnel.hint}`;
+    } else if (/ETIMEDOUT|Connect Timeout|DEADLINE_EXCEEDED/i.test(errDetail(err))) {
+      hint =
+        ' — the AlgoIP proxy never answered. This is not a credentials or scheme problem: the connection timed out before anything was sent. Your packets are being dropped, which almost always means AlgoIP is not allowlisting this server. Run diagnostics below to get the exact egress IP to allowlist.';
     } else if (err.code === 'UPSTREAM_UNREACHABLE') {
       hint =
-        ' — api.kite.trade was not reachable through the AlgoIP tunnel. Run /api/proxy-check to see whether the proxy scheme, credentials or host are at fault.';
+        ' — api.kite.trade was not reachable through the AlgoIP tunnel. Run diagnostics below to see whether DNS, TCP, the scheme or the credentials are at fault.';
     }
     return sendPage(
       res,
