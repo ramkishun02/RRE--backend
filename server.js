@@ -13,6 +13,7 @@
 'use strict';
 
 const path = require('path');
+const fs = require('fs');
 const express = require('express');
 const crypto = require('crypto');
 const { Pool } = require('pg');
@@ -30,10 +31,10 @@ const KITE_BASE = 'https://api.kite.trade';
 const KITE_LOGIN_BASE = 'https://kite.zerodha.com/connect/login';
 
 const ALGOIP_HOST = process.env.ALGOIP_HOST || '';
-const ALGOIP_PORT = process.env.ALGOIP_ID || '';
-const ALGOIP_USER = process.env.ALGOIP_NODE || '';
+const ALGOIP_PORT = process.env.ALGOIP_PORT || '';
+const ALGOIP_USER = process.env.ALGOIP_USER || '';
 const ALGOIP_PASSWORD = process.env.ALGOIP_PASSWORD || '';
-const ALGOIP_EXPECTED_IP = process.env.ALGOIP_PI || '';
+const ALGOIP_EXPECTED_IP = process.env.ALGOIP_EXPECTED_IP || '';
 
 const DATABASE_URL = process.env.DATABASE_URL || '';
 
@@ -717,14 +718,469 @@ app.get('/api/orders', asyncRoute(async (req, res) => {
   });
 }));
 
-// --- Static frontend --------------------------------------------------------
+// --- Built-in dashboard markup ----------------------------------------------
+// Self-contained: no build step, no CDN, no framework. Talks to this server's
+// own /api endpoints. Written with string concatenation only (no nested
+// template placeholders) so it survives being embedded in a template literal.
+
+const DASHBOARD_HTML = `<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kite Terminal — AlgoIP Egress</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#0f172a;color:#e2e8f0;
+       font:14px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  a{color:#38bdf8}
+  .wrap{max-width:1080px;margin:0 auto;padding:28px 20px 64px}
+  header{display:flex;flex-wrap:wrap;align-items:center;gap:14px;margin-bottom:26px}
+  h1{margin:0;font-size:18px;font-weight:600;letter-spacing:-.01em}
+  h1 span{color:#64748b;font-weight:400}
+  .pill{display:inline-flex;align-items:center;gap:7px;padding:5px 11px;border-radius:999px;
+        font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;
+        border:1px solid #334155;background:#111c33;color:#94a3b8}
+  .pill.ok{border-color:rgba(16,185,129,.35);background:rgba(16,185,129,.1);color:#6ee7b7}
+  .pill.bad{border-color:rgba(244,63,94,.35);background:rgba(244,63,94,.1);color:#fda4af}
+  .dot{width:6px;height:6px;border-radius:50%;background:currentColor}
+  .spacer{flex:1}
+  .grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}
+  .card{border:1px solid #1e293b;border-radius:12px;background:#111c33;padding:18px}
+  .card h2{margin:0 0 14px;font-size:11px;font-weight:600;text-transform:uppercase;
+           letter-spacing:.14em;color:#64748b}
+  label{display:block;font-size:11px;color:#94a3b8;margin:0 0 5px}
+  input,select{width:100%;padding:9px 11px;border-radius:8px;border:1px solid #334155;
+       background:#0b1424;color:#e2e8f0;font-size:13px;font-family:inherit;outline:none;
+       transition:border-color .18s ease}
+  input:focus,select:focus{border-color:#38bdf8}
+  button{padding:9px 15px;border-radius:8px;border:1px solid #334155;background:#1e293b;
+         color:#e2e8f0;font-size:13px;font-weight:500;font-family:inherit;cursor:pointer;
+         transition:background-color .18s ease,border-color .18s ease,transform .12s ease}
+  button:hover{background:#27364d;border-color:#475569}
+  button:active{transform:translateY(1px)}
+  button.primary{background:#0284c7;border-color:#0ea5e9;color:#fff}
+  button.primary:hover{background:#0369a1}
+  button.sell{background:#9f1239;border-color:#be123c;color:#fff}
+  button.sell:hover{background:#881337}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  .row{display:flex;gap:10px;align-items:flex-end}
+  .row>*{flex:1}
+  .row>.narrow{flex:0 0 96px}
+  .fields{display:grid;gap:11px;grid-template-columns:1fr 1fr}
+  .big{font-size:30px;font-weight:600;letter-spacing:-.02em;color:#fff}
+  .muted{color:#64748b;font-size:12px}
+  .out{margin-top:12px;padding:11px;border-radius:8px;background:#0b1424;border:1px solid #1e293b;
+       font-size:12px;white-space:pre-wrap;word-break:break-word;max-height:190px;overflow:auto}
+  .ok{color:#6ee7b7}.bad{color:#fda4af}.warn{color:#fcd34d}
+  ul.res{list-style:none;margin:12px 0 0;padding:0;max-height:200px;overflow:auto}
+  ul.res li{padding:8px 10px;border-radius:7px;cursor:pointer;display:flex;gap:10px;
+            align-items:baseline;transition:background-color .15s ease}
+  ul.res li:hover{background:#1c2942}
+  ul.res .sym{font-weight:600;font-size:13px}
+  ul.res .nm{color:#64748b;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th{text-align:left;color:#64748b;font-weight:500;padding:7px 8px;border-bottom:1px solid #1e293b;
+     font-size:10px;text-transform:uppercase;letter-spacing:.08em}
+  td{padding:8px;border-bottom:1px solid #16202f}
+  .overlay{position:fixed;inset:0;background:rgba(2,6,16,.72);display:none;place-items:center;
+           padding:20px;z-index:50}
+  .overlay.show{display:grid}
+  .modal{max-width:430px;width:100%;border:1px solid #1e293b;border-radius:14px;background:#111c33;
+         padding:24px;box-shadow:0 30px 70px rgba(0,0,0,.5)}
+  .modal h3{margin:0 0 12px;font-size:16px}
+  .modal .acts{display:flex;gap:10px;justify-content:flex-end;margin-top:20px}
+  .kv{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #16202f;font-size:13px}
+  .kv b{font-weight:600}
+  .banner{margin-bottom:18px;padding:12px 14px;border-radius:10px;font-size:13px;
+          border:1px solid rgba(252,211,77,.3);background:rgba(252,211,77,.08);color:#fcd34d;display:none}
+  .banner.show{display:block}
+</style></head>
+<body><div class="wrap">
+
+<header>
+  <h1>Kite Terminal <span>/ AlgoIP egress</span></h1>
+  <span id="pill" class="pill"><span class="dot"></span><span id="pillText">Checking…</span></span>
+  <span class="spacer"></span>
+  <a id="loginBtn" href="/kite/login"><button class="primary" data-testid="login-button">Connect Zerodha</button></a>
+  <button id="logoutBtn" data-testid="logout-button" style="display:none">Log out</button>
+</header>
+
+<div id="banner" class="banner"></div>
+
+<div class="grid">
+
+  <div class="card">
+    <h2>Token health</h2>
+    <div class="big mono" id="countdown" data-testid="token-countdown">--:--:--</div>
+    <div class="muted" id="tokenMeta" data-testid="token-meta">No active session</div>
+    <div class="muted" style="margin-top:8px">Until the next 06:00 IST regulatory reset</div>
+  </div>
+
+  <div class="card">
+    <h2>AlgoIP egress check</h2>
+    <button id="proxyBtn" data-testid="proxy-check-button">Run /api/proxy-check</button>
+    <div class="out mono" id="proxyOut" data-testid="proxy-check-output">Not run yet.</div>
+  </div>
+
+  <div class="card">
+    <h2>Instrument search</h2>
+    <div class="row">
+      <div><label for="q">NSE symbol or name</label>
+        <input id="q" data-testid="search-input" placeholder="INFY" autocomplete="off"></div>
+      <div class="narrow"><button id="searchBtn" data-testid="search-button">Search</button></div>
+    </div>
+    <ul class="res" id="searchRes" data-testid="search-results"></ul>
+  </div>
+
+  <div class="card">
+    <h2>Live quote</h2>
+    <div class="row">
+      <div><label for="qsym">Symbol</label>
+        <input id="qsym" data-testid="quote-input" placeholder="INFY" autocomplete="off"></div>
+      <div class="narrow"><button id="quoteBtn" data-testid="quote-button">Fetch</button></div>
+    </div>
+    <div class="big mono" id="ltp" data-testid="quote-ltp" style="margin-top:14px">—</div>
+    <div class="muted" id="quoteMeta" data-testid="quote-meta"></div>
+  </div>
+
+  <div class="card" style="grid-column:1/-1">
+    <h2>Order ticket</h2>
+    <div class="fields">
+      <div><label for="oSym">Symbol</label><input id="oSym" data-testid="order-symbol" placeholder="INFY"></div>
+      <div><label for="oQty">Quantity</label><input id="oQty" data-testid="order-quantity" type="number" min="1" value="1"></div>
+      <div><label for="oProduct">Product</label><select id="oProduct" data-testid="order-product">
+        <option>MIS</option><option>CNC</option><option>NRML</option></select></div>
+      <div><label for="oType">Order type</label><select id="oType" data-testid="order-type">
+        <option>MARKET</option><option>LIMIT</option></select></div>
+      <div><label for="oValidity">Validity</label><select id="oValidity" data-testid="order-validity">
+        <option>DAY</option><option>IOC</option></select></div>
+      <div><label for="oPrice">Price (LIMIT only)</label>
+        <input id="oPrice" data-testid="order-price" type="number" step="0.05" placeholder="—" disabled></div>
+    </div>
+    <div style="display:flex;gap:10px;margin-top:16px">
+      <button class="primary" id="buyBtn" data-testid="order-buy-button">Buy</button>
+      <button class="sell" id="sellBtn" data-testid="order-sell-button">Sell</button>
+    </div>
+    <div class="out mono" id="orderOut" data-testid="order-output" style="display:none"></div>
+  </div>
+
+  <div class="card" style="grid-column:1/-1">
+    <h2>Orders</h2>
+    <div class="row" style="margin-bottom:14px">
+      <div><label for="oid">Order id</label>
+        <input id="oid" data-testid="order-status-input" placeholder="250101000000001"></div>
+      <div class="narrow"><button id="statusBtn" data-testid="order-status-button">Status</button></div>
+      <div class="narrow"><button id="refreshBtn" data-testid="orders-refresh-button">Refresh</button></div>
+    </div>
+    <table><thead><tr><th>Order id</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Status</th></tr></thead>
+      <tbody id="ordersBody" data-testid="orders-body">
+        <tr><td colspan="5" class="muted">No orders loaded.</td></tr></tbody></table>
+    <div class="out mono" id="statusOut" data-testid="order-status-output" style="display:none"></div>
+  </div>
+
+</div>
+</div>
+
+<div class="overlay" id="overlay">
+  <div class="modal">
+    <h3 id="mTitle">Confirm order</h3>
+    <div id="mBody"></div>
+    <div class="acts">
+      <button id="mCancel" data-testid="modal-cancel-button">Cancel</button>
+      <button class="primary" id="mConfirm" data-testid="modal-confirm-button">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  var $ = function(id){ return document.getElementById(id); };
+  var pendingOrder = null;
+
+  function api(url, opts){
+    return fetch(url, opts || {}).then(function(r){
+      return r.text().then(function(t){
+        var b = null; try { b = t ? JSON.parse(t) : null; } catch(e){ b = { raw: t }; }
+        return { status: r.status, ok: r.ok, body: b };
+      });
+    });
+  }
+  function show(el, cls, text){
+    el.style.display = 'block';
+    el.className = 'out mono ' + (cls || '');
+    el.textContent = text;
+  }
+  function banner(msg){
+    var b = $('banner');
+    if (!msg) { b.className = 'banner'; b.textContent = ''; return; }
+    b.className = 'banner show';
+    b.innerHTML = msg;
+  }
+  function handleAuth(res){
+    if (res.status === 401 && res.body && res.body.code === 'KITE_SESSION_EXPIRED'){
+      banner('Kite session expired or not established. <a href="/kite/login">Connect Zerodha</a> to continue.');
+      return true;
+    }
+    return false;
+  }
+
+  // ---- session + countdown -------------------------------------------------
+  var expiresAt = null;
+  function pad(n){ return (n < 10 ? '0' : '') + n; }
+  function tick(){
+    if (!expiresAt){ $('countdown').textContent = '--:--:--'; return; }
+    var s = Math.max(0, Math.floor((expiresAt - Date.now())/1000));
+    var h = Math.floor(s/3600), m = Math.floor((s%3600)/60);
+    $('countdown').textContent = pad(h) + ':' + pad(m) + ':' + pad(s%60);
+  }
+  function loadSession(){
+    return api('/api/session').then(function(res){
+      var d = res.body || {};
+      var pill = $('pill'), txt = $('pillText');
+      if (d.connected){
+        pill.className = 'pill ok';
+        txt.textContent = 'Connected' + (d.userId ? ' · ' + d.userId : '');
+        $('loginBtn').style.display = 'none';
+        $('logoutBtn').style.display = '';
+        $('tokenMeta').textContent = 'Login ' + (d.loginTime || '—') + (d.userName ? ' · ' + d.userName : '');
+        expiresAt = d.expiresAt ? new Date(d.expiresAt).getTime() : null;
+        banner('');
+      } else {
+        pill.className = 'pill bad';
+        txt.textContent = 'Disconnected';
+        $('loginBtn').style.display = '';
+        $('logoutBtn').style.display = 'none';
+        $('tokenMeta').textContent = 'No active session';
+        expiresAt = d.expiresAt ? new Date(d.expiresAt).getTime() : null;
+      }
+      tick();
+    }).catch(function(){
+      $('pill').className = 'pill bad';
+      $('pillText').textContent = 'Backend unreachable';
+    });
+  }
+  $('logoutBtn').onclick = function(){
+    api('/api/session/logout', { method: 'POST' }).then(loadSession);
+  };
+
+  // ---- proxy check ---------------------------------------------------------
+  $('proxyBtn').onclick = function(){
+    var out = $('proxyOut'); var btn = this;
+    btn.disabled = true; show(out, '', 'Checking egress IP…');
+    api('/api/proxy-check').then(function(res){
+      var d = res.body || {};
+      if (d.code === 'PROXY_UNREACHABLE'){
+        show(out, 'bad', 'PROXY UNREACHABLE\\n' + (d.message || '') + '\\nvia ' + (d.proxyHost || 'direct'));
+      } else if (d.matches === true){
+        show(out, 'ok', 'MATCH\\negress ' + d.egressIp + '\\nexpected ' + d.expectedIp + '\\n' + d.latencyMs + 'ms');
+      } else if (d.matches === false){
+        show(out, 'bad', 'MISMATCH — Zerodha will reject\\negress ' + d.egressIp +
+          '\\nexpected ' + d.expectedIp + '\\nFix the whitelist in the Kite console.');
+      } else {
+        show(out, 'warn', 'egress ' + d.egressIp + '\\nALGOIP_EXPECTED_IP is unset, cannot verify.' +
+          '\\nproxy ' + (d.proxyConfigured ? d.proxyHost : 'NOT CONFIGURED (direct egress)'));
+      }
+    }).catch(function(e){ show(out, 'bad', 'Request failed: ' + e.message); })
+      .then(function(){ btn.disabled = false; });
+  };
+
+  // ---- instrument search ---------------------------------------------------
+  function doSearch(){
+    var q = $('q').value.trim();
+    var ul = $('searchRes');
+    if (!q){ ul.innerHTML = ''; return; }
+    ul.innerHTML = '<li class="muted">Searching…</li>';
+    api('/api/stocks/search?q=' + encodeURIComponent(q) + '&limit=15').then(function(res){
+      if (handleAuth(res)){ ul.innerHTML = '<li class="bad">Session expired</li>'; return; }
+      var d = res.body || {};
+      if (!d.results || !d.results.length){ ul.innerHTML = '<li class="muted">No matches.</li>'; return; }
+      ul.innerHTML = '';
+      d.results.forEach(function(r){
+        var li = document.createElement('li');
+        li.setAttribute('data-testid', 'search-result-' + r.tradingsymbol);
+        var s = document.createElement('span'); s.className = 'sym mono'; s.textContent = r.tradingsymbol;
+        var n = document.createElement('span'); n.className = 'nm'; n.textContent = r.name || '';
+        li.appendChild(s); li.appendChild(n);
+        li.onclick = function(){
+          $('qsym').value = r.tradingsymbol;
+          $('oSym').value = r.tradingsymbol;
+          doQuote();
+        };
+        ul.appendChild(li);
+      });
+    }).catch(function(e){ ul.innerHTML = '<li class="bad">' + e.message + '</li>'; });
+  }
+  $('searchBtn').onclick = doSearch;
+  $('q').addEventListener('keydown', function(e){ if (e.key === 'Enter') doSearch(); });
+
+  // ---- quote ---------------------------------------------------------------
+  function doQuote(){
+    var sym = $('qsym').value.trim().toUpperCase();
+    if (!sym) return;
+    $('ltp').textContent = '…'; $('quoteMeta').textContent = '';
+    api('/api/market/quote?symbol=' + encodeURIComponent(sym)).then(function(res){
+      if (handleAuth(res)){ $('ltp').textContent = '—'; $('quoteMeta').textContent = 'Session expired'; return; }
+      var d = res.body || {};
+      if (!res.ok){ $('ltp').textContent = '—'; $('quoteMeta').textContent = d.message || ('HTTP ' + res.status); return; }
+      $('ltp').textContent = '\\u20b9 ' + d.lastPrice;
+      $('quoteMeta').textContent = d.exchange + ':' + d.symbol + ' · token ' + d.instrumentToken +
+        ' · ' + new Date(d.fetchedAt).toLocaleTimeString();
+    }).catch(function(e){ $('ltp').textContent = '—'; $('quoteMeta').textContent = e.message; });
+  }
+  $('quoteBtn').onclick = doQuote;
+  $('qsym').addEventListener('keydown', function(e){ if (e.key === 'Enter') doQuote(); });
+
+  // ---- order ticket --------------------------------------------------------
+  $('oType').onchange = function(){
+    var limit = this.value === 'LIMIT';
+    $('oPrice').disabled = !limit;
+    if (!limit) $('oPrice').value = '';
+  };
+
+  function buildOrder(side){
+    return {
+      symbol: $('oSym').value.trim().toUpperCase(),
+      side: side,
+      quantity: parseInt($('oQty').value, 10),
+      product: $('oProduct').value,
+      orderType: $('oType').value,
+      validity: $('oValidity').value,
+      price: $('oType').value === 'LIMIT' && $('oPrice').value ? parseFloat($('oPrice').value) : undefined
+    };
+  }
+  function kv(k, v){
+    return '<div class="kv"><span class="muted">' + k + '</span><b class="mono">' + v + '</b></div>';
+  }
+  function confirmOrder(side){
+    var o = buildOrder(side);
+    if (!o.symbol){ show($('orderOut'), 'bad', 'Symbol is required.'); return; }
+    pendingOrder = o;
+    $('mTitle').textContent = side + ' ' + o.symbol;
+    $('mBody').innerHTML = kv('Symbol', o.symbol) + kv('Side', o.side) + kv('Quantity', o.quantity) +
+      kv('Product', o.product) + kv('Type', o.orderType) + kv('Validity', o.validity) +
+      (o.price ? kv('Price', o.price) : '');
+    $('mConfirm').className = side === 'SELL' ? 'sell' : 'primary';
+    $('overlay').className = 'overlay show';
+  }
+  $('buyBtn').onclick = function(){ confirmOrder('BUY'); };
+  $('sellBtn').onclick = function(){ confirmOrder('SELL'); };
+  $('mCancel').onclick = function(){ $('overlay').className = 'overlay'; pendingOrder = null; };
+  $('mConfirm').onclick = function(){
+    if (!pendingOrder) return;
+    var btn = this; btn.disabled = true;
+    api('/api/orders', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(pendingOrder)
+    }).then(function(res){
+      $('overlay').className = 'overlay';
+      btn.disabled = false;
+      var d = res.body || {};
+      if (handleAuth(res)){ show($('orderOut'), 'bad', 'Session expired — reconnect to place orders.'); return; }
+      if (res.status === 201){
+        show($('orderOut'), 'ok', 'ACCEPTED\\norderId ' + d.orderId + '\\n' +
+          d.side + ' ' + d.quantity + ' ' + d.symbol + ' ' + d.orderType + '/' + d.product);
+        $('oid').value = d.orderId;
+        loadOrders();
+      } else if (d.errors){
+        show($('orderOut'), 'bad', 'REJECTED (validation)\\n- ' + d.errors.join('\\n- '));
+      } else {
+        show($('orderOut'), 'bad', 'REJECTED\\n' + (d.message || ('HTTP ' + res.status)));
+      }
+      pendingOrder = null;
+    }).catch(function(e){
+      $('overlay').className = 'overlay'; btn.disabled = false;
+      show($('orderOut'), 'bad', e.message);
+    });
+  };
+
+  // ---- orders --------------------------------------------------------------
+  function loadOrders(){
+    var body = $('ordersBody');
+    api('/api/orders').then(function(res){
+      if (handleAuth(res)){
+        body.innerHTML = '<tr><td colspan="5" class="bad">Session expired.</td></tr>'; return;
+      }
+      var d = res.body || {};
+      if (!d.orders || !d.orders.length){
+        body.innerHTML = '<tr><td colspan="5" class="muted">No orders today.</td></tr>'; return;
+      }
+      body.innerHTML = '';
+      d.orders.forEach(function(o){
+        var tr = document.createElement('tr');
+        tr.setAttribute('data-testid', 'order-row-' + o.orderId);
+        tr.innerHTML = '<td class="mono">' + o.orderId + '</td><td class="mono">' + (o.symbol||'') +
+          '</td><td>' + (o.side||'') + '</td><td>' + (o.quantity||0) + '</td><td>' + (o.status||'') + '</td>';
+        tr.onclick = function(){ $('oid').value = o.orderId; doStatus(); };
+        body.appendChild(tr);
+      });
+    }).catch(function(e){
+      body.innerHTML = '<tr><td colspan="5" class="bad">' + e.message + '</td></tr>';
+    });
+  }
+  function doStatus(){
+    var id = $('oid').value.trim();
+    if (!id) return;
+    var out = $('statusOut');
+    show(out, '', 'Loading…');
+    api('/api/orders/' + encodeURIComponent(id) + '/status').then(function(res){
+      if (handleAuth(res)){ show(out, 'bad', 'Session expired'); return; }
+      var d = res.body || {};
+      if (!res.ok){ show(out, 'bad', d.message || ('HTTP ' + res.status)); return; }
+      show(out, d.status === 'COMPLETE' ? 'ok' : (d.status === 'REJECTED' ? 'bad' : 'warn'),
+        d.status + '\\n' + d.side + ' ' + d.symbol +
+        '\\nfilled ' + d.filledQuantity + '/' + d.quantity +
+        '\\navg ' + d.averagePrice +
+        (d.statusMessage ? '\\n' + d.statusMessage : ''));
+    }).catch(function(e){ show(out, 'bad', e.message); });
+  }
+  $('statusBtn').onclick = doStatus;
+  $('refreshBtn').onclick = loadOrders;
+
+  // ---- boot ----------------------------------------------------------------
+  loadSession();
+  setInterval(tick, 1000);
+  setInterval(loadSession, 60000);
+  if (/[?&]kite=connected/.test(location.search)) loadOrders();
+})();
+</script>
+</body></html>`;
+
+// --- Static frontend / built-in dashboard -----------------------------------
+//
+// BUGFIX: this block previously did `res.sendFile(client/dist/index.html)` and
+// answered `{"code":"NOT_FOUND"}` from the sendFile error callback whenever that
+// build was absent. On a backend-only deploy (no client build) that meant EVERY
+// non-API route 404'd — including /dashboard, which is exactly where
+// /kite/callback redirects after a successful login, so OAuth dead-ended.
+//
+// Now: if a client build exists we serve it; if not we serve the built-in
+// terminal below. The backend is never dependent on a frontend build existing.
 
 const CLIENT_DIR = path.join(__dirname, 'client', 'dist');
-app.use(express.static(CLIENT_DIR));
-app.get(/^\/(?!api\/|kite\/).*/, (req, res) => {
-  res.sendFile(path.join(CLIENT_DIR, 'index.html'), (err) => {
-    if (err) res.status(404).json({ code: 'NOT_FOUND', message: 'Route not found' });
-  });
+const CLIENT_INDEX = path.join(CLIENT_DIR, 'index.html');
+const hasClientBuild = fs.existsSync(CLIENT_INDEX);
+
+if (hasClientBuild) {
+  app.use(express.static(CLIENT_DIR));
+  log('INFO', `Serving client build from ${CLIENT_DIR}`);
+} else {
+  log('INFO', 'No client build found — serving the built-in dashboard');
+}
+
+// Unknown /api/* routes must answer JSON 404, never fall through to HTML.
+app.all(/^\/api\//, (req, res) => {
+  res.status(404).json({ code: 'NOT_FOUND', message: `No API route for ${req.method} ${req.path}` });
+});
+
+// Everything else renders the SPA (if built) or the built-in dashboard.
+app.get(/^\/(?!api\/).*/, (req, res) => {
+  if (hasClientBuild) {
+    return res.sendFile(CLIENT_INDEX, (err) => {
+      if (err) res.status(200).type('html').send(DASHBOARD_HTML);
+    });
+  }
+  res.status(200).type('html').send(DASHBOARD_HTML);
 });
 
 // --- Central error handler --------------------------------------------------
