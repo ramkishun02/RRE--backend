@@ -14,6 +14,8 @@
 
 const path = require('path');
 const fs = require('fs');
+const net = require('net');
+const dns = require('dns').promises;
 const express = require('express');
 const crypto = require('crypto');
 const { Pool } = require('pg');
@@ -31,10 +33,10 @@ const KITE_BASE = 'https://api.kite.trade';
 const KITE_LOGIN_BASE = 'https://kite.zerodha.com/connect/login';
 
 const ALGOIP_HOST = process.env.ALGOIP_HOST || '';
-const ALGOIP_PORT = process.env.ALGOIP_ID || '';
-const ALGOIP_USER = process.env.ALGOIP_NODE || '';
+const ALGOIP_PORT = process.env.ALGOIP_PORT || '';
+const ALGOIP_USER = process.env.ALGOIP_USER || '';
 const ALGOIP_PASSWORD = process.env.ALGOIP_PASSWORD || '';
-const ALGOIP_EXPECTED_IP = process.env.ALGOIP_PI || '';
+const ALGOIP_EXPECTED_IP = process.env.ALGOIP_EXPECTED_IP || '';
 // Optional override: "http" or "https". If unset we infer from the port —
 // 443/8443 imply the CONNECT hop itself is TLS-wrapped.
 const ALGOIP_PROTOCOL = (process.env.ALGOIP_PROTOCOL || '').replace(/[:/]/g, '').toLowerCase();
@@ -78,8 +80,13 @@ const DISPATCHER_OPTS = {
 // ADDRESS, so a hostname with several A/AAAA records can stack up to ~95s of
 // connect attempts — long enough for Render's edge to time out the request
 // first. An AbortSignal caps the whole attempt regardless of DNS fan-out.
-const ATTEMPT_DEADLINE_MS = 12000;
-const PROBE_DEADLINE_MS = 10000;
+const ATTEMPT_DEADLINE_MS = Number(process.env.REQUEST_DEADLINE_MS || 12000);
+const PROBE_DEADLINE_MS = Number(process.env.PROBE_DEADLINE_MS || 10000);
+
+// The OAuth exchange gets a longer ceiling on purpose: a Kite request_token is
+// SINGLE-USE and short-lived, so timing out mid-exchange burns it permanently
+// and the user has to restart the whole login. Better to wait than to lose it.
+const OAUTH_DEADLINE_MS = Number(process.env.OAUTH_DEADLINE_MS || 28000);
 
 /**
  * BUGFIX: this used to hardcode `http://host:port`. With ALGOIP_PORT=443 the
@@ -259,7 +266,11 @@ function isTransient(err) {
  * Single funnel for every Kite HTTP call.
  * Retries transient socket failures on a freshly built dispatcher.
  */
-async function kiteRequest(method, urlPath, { query, form, accessToken, retries = 2 } = {}) {
+async function kiteRequest(
+  method,
+  urlPath,
+  { query, form, accessToken, retries = 2, deadlineMs, budgetMs } = {}
+) {
   const url = new URL(urlPath.startsWith('http') ? urlPath : KITE_BASE + urlPath);
   if (query) {
     for (const [k, v] of Object.entries(query)) {
@@ -281,33 +292,58 @@ async function kiteRequest(method, urlPath, { query, form, accessToken, retries 
   }
 
   let lastErr;
+  // budgetMs caps the WHOLE sequence (attempts + backoff + scheme flip). A
+  // per-attempt deadline alone still stacks: 3 attempts x 12s + a flip
+  // overshot Render's edge timeout on a blackholed proxy.
+  const startedAll = Date.now();
+  const remainingBudget = () => (budgetMs ? budgetMs - (Date.now() - startedAll) : Infinity);
+
   for (let attempt = 0; attempt <= retries; attempt++) {
+    const left = remainingBudget();
+    if (left <= 250) {
+      if (!lastErr) {
+        lastErr = new Error(`request budget of ${budgetMs}ms exhausted`);
+        lastErr.code = 'DEADLINE_EXCEEDED';
+      }
+      break;
+    }
+    const attemptMs = Math.min(deadlineMs || ATTEMPT_DEADLINE_MS, left);
+
     try {
-      const res = await request(url, {
-        method,
-        headers,
-        body,
-        dispatcher,
-        signal: AbortSignal.timeout(ATTEMPT_DEADLINE_MS),
-      });
-      const text = await res.body.text();
+      // withDeadline as well as the signal: undici does NOT honour an
+      // AbortSignal while a CONNECT is stalled mid-handshake, so connectTimeout
+      // (per resolved address) would otherwise dominate and blow the budget.
+      const run = (async () => {
+        const res = await request(url, {
+          method,
+          headers,
+          body,
+          dispatcher,
+          signal: AbortSignal.timeout(attemptMs),
+        });
+        return { status: res.statusCode, text: await res.body.text() };
+      })();
+      const got = await withDeadline(run, attemptMs + 500, 'kite request');
+
       let parsed = null;
-      try { parsed = text ? JSON.parse(text) : null; } catch (_) { parsed = { raw: text }; }
+      try { parsed = got.text ? JSON.parse(got.text) : null; } catch (_) { parsed = { raw: got.text }; }
       // A completed round trip proves the scheme — stop second-guessing it.
       if (!schemeLatched && proxyUri()) {
         schemeLatched = true;
         log('INFO', `AlgoIP CONNECT scheme latched to ${activeScheme.toUpperCase()}`);
       }
-      return { status: res.statusCode, body: parsed, text };
+      return { status: got.status, body: parsed, text: got.text };
     } catch (err) {
       lastErr = err;
+      if (remainingBudget() <= 250) break;
 
       // Wrong CONNECT scheme? Flip once and retry immediately (no backoff).
       if (attempt < retries && (await maybeFlipScheme(err))) continue;
 
       if (attempt < retries && isTransient(err)) {
         await recycleDispatcher(err.code || err.message);
-        await new Promise((r) => setTimeout(r, 250 * (attempt + 1)));
+        const backoff = Math.min(250 * (attempt + 1), Math.max(0, remainingBudget() - 250));
+        if (backoff > 0) await new Promise((r) => setTimeout(r, backoff));
         continue;
       }
       break;
@@ -503,12 +539,15 @@ function escapeHtml(s) {
   );
 }
 
-function sendPage(res, statusCode, title, message, redirectTo) {
+function sendPage(res, statusCode, title, message, redirectTo, links) {
   const code = Number.isInteger(statusCode) ? statusCode : 500;
   const ok = code < 400;
   const redirectMeta = redirectTo
     ? `<meta http-equiv="refresh" content="2;url=${escapeHtml(redirectTo)}">`
     : '';
+  const linkList = (links && links.length ? links : [{ href: redirectTo || '/dashboard', label: 'Continue &rarr;' }])
+    .map((l) => `<a href="${escapeHtml(l.href)}">${l.label}</a>`)
+    .join('');
 
   res.status(code).type('html').send(`<!doctype html>
 <html lang="en"><head>
@@ -516,18 +555,20 @@ function sendPage(res, statusCode, title, message, redirectTo) {
 <title>${escapeHtml(title)}</title>${redirectMeta}
 <style>
   body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0f172a;
-       color:#e2e8f0;font:15px/1.6 ui-sans-serif,system-ui,-apple-system,sans-serif}
-  .card{max-width:520px;padding:36px 40px;border:1px solid #1e293b;border-radius:14px;
+       color:#e2e8f0;font:15px/1.6 ui-sans-serif,system-ui,-apple-system,sans-serif;padding:20px}
+  .card{max-width:560px;padding:36px 40px;border:1px solid #1e293b;border-radius:14px;
         background:#111c33;box-shadow:0 24px 60px rgba(0,0,0,.45)}
   h1{margin:0 0 10px;font-size:19px;letter-spacing:-.01em;color:${ok ? '#4ade80' : '#f87171'}}
   p{margin:0;color:#94a3b8}
-  code{color:#7dd3fc}
-  a{display:inline-block;margin-top:22px;color:#38bdf8;text-decoration:none;font-weight:600}
+  code{color:#7dd3fc;font-family:ui-monospace,Menlo,monospace}
+  .acts{margin-top:24px;display:flex;flex-wrap:wrap;gap:18px}
+  a{color:#38bdf8;text-decoration:none;font-weight:600}
+  a:hover{text-decoration:underline}
 </style></head>
 <body><div class="card">
   <h1>${escapeHtml(title)}</h1>
   <p>${escapeHtml(message)}</p>
-  <a href="${escapeHtml(redirectTo || '/dashboard')}">Continue &rarr;</a>
+  <div class="acts">${linkList}</div>
 </div></body></html>`);
 }
 
@@ -554,6 +595,162 @@ app.get('/api/health', (req, res) => {
     kiteConfigured: Boolean(KITE_API_KEY && KITE_API_SECRET),
   });
 });
+
+// --- Low-level reachability probes ------------------------------------------
+//
+// ETIMEDOUT on a CONNECT is ambiguous from inside undici: it cannot tell you
+// whether DNS was wrong, the TCP handshake was silently dropped (firewall /
+// source-IP allowlist), or the proxy accepted the socket and then stalled.
+// These probes separate those cases so the answer is not guesswork.
+
+/** Raw TCP handshake, no TLS, no HTTP. Distinguishes DROPPED from REFUSED. */
+function tcpProbe(host, port, ms) {
+  return new Promise((resolve) => {
+    const started = Date.now();
+    const socket = new net.Socket();
+    let settled = false;
+    const done = (result) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve({ ...result, ms: Date.now() - started });
+    };
+    socket.setTimeout(ms);
+    socket.once('connect', () => done({ reachable: true, verdict: 'TCP handshake completed' }));
+    socket.once('timeout', () =>
+      done({
+        reachable: false,
+        code: 'ETIMEDOUT',
+        verdict:
+          'No response at all — SYN packets are being dropped. This is a firewall or source-IP allowlist, not a wrong password.',
+      })
+    );
+    socket.once('error', (err) =>
+      done({
+        reachable: false,
+        code: err.code || 'ERR',
+        verdict:
+          err.code === 'ECONNREFUSED'
+            ? 'Host reachable but nothing is listening on that port — check ALGOIP_PORT.'
+            : err.code === 'ENOTFOUND' || err.code === 'EAI_AGAIN'
+              ? 'Hostname does not resolve — check ALGOIP_HOST spelling.'
+              : `Socket error: ${err.code || err.message}`,
+      })
+    );
+    socket.connect(Number(port), host);
+  });
+}
+
+/** Direct (non-proxied) egress IP — the address AlgoIP must allowlist. */
+async function directEgressIp() {
+  const agent = new Agent({ ...DISPATCHER_OPTS, connections: 2 });
+  try {
+    const r = await withDeadline(
+      request('https://api.ipify.org?format=json', {
+        dispatcher: agent,
+        method: 'GET',
+        signal: AbortSignal.timeout(PROBE_DEADLINE_MS),
+      }).then(async (res) => JSON.parse(await res.body.text()).ip),
+      PROBE_DEADLINE_MS + 1500,
+      'direct egress probe'
+    );
+    return { ip: r, error: null };
+  } catch (err) {
+    return { ip: null, error: errDetail(err) };
+  } finally {
+    try { agent.destroy(); } catch (_) { /* noop */ }
+  }
+}
+
+/**
+ * GET /api/diagnostics
+ * The endpoint to reach for when /kite/callback reports ETIMEDOUT. Answers, in
+ * order: does the name resolve, does raw TCP connect, does the tunnel work, and
+ * what IP does this server actually egress from.
+ */
+app.get('/api/diagnostics', asyncRoute(async (req, res) => {
+  const uri = proxyUri();
+  const out = {
+    proxyConfigured: Boolean(uri),
+    proxyUri: uri,
+    scheme: uri ? new URL(uri).protocol.replace(':', '') : null,
+    credentialsSupplied: Boolean(proxyAuthToken()),
+    dns: null,
+    tcp: null,
+    tunnel: null,
+    directEgressIp: null,
+    expectedIp: ALGOIP_EXPECTED_IP || null,
+    hints: [],
+  };
+
+  // 1. What IP does Render actually leave from? This is what to allowlist.
+  const direct = await directEgressIp();
+  out.directEgressIp = direct.ip;
+  if (direct.error) out.hints.push(`Could not determine this server's own egress IP: ${direct.error}`);
+
+  if (!uri) {
+    out.hints.push('ALGOIP_HOST is not set, so nothing is proxied and Zerodha will reject this IP.');
+    return res.json(out);
+  }
+
+  // URL.port is '' when the port equals the scheme default (443 for https,
+  // 80 for http) — so never read it bare, or a :443 proxy gets probed on port 0.
+  const parsed = new URL(uri);
+  const hostname = parsed.hostname;
+  const port = parsed.port || ALGOIP_PORT || (parsed.protocol === 'https:' ? '443' : '80');
+
+  // 2. DNS
+  try {
+    const addrs = await dns.lookup(hostname, { all: true });
+    out.dns = { resolved: true, addresses: addrs.map((a) => `${a.address} (IPv${a.family})`) };
+    if (addrs.length > 1) {
+      out.hints.push(
+        `${hostname} resolves to ${addrs.length} addresses; undici applies its connect timeout to each one, which is why a bad proxy used to hang for ~95s.`
+      );
+    }
+  } catch (err) {
+    out.dns = { resolved: false, error: err.code || err.message };
+    out.hints.push(`ALGOIP_HOST does not resolve (${err.code}). Check the spelling.`);
+    return res.json(out);
+  }
+
+  // 3. Raw TCP — the decisive test for ETIMEDOUT
+  out.tcp = await tcpProbe(hostname, port, PROBE_DEADLINE_MS);
+  if (!out.tcp.reachable) {
+    if (out.tcp.code === 'ETIMEDOUT') {
+      out.hints.push(
+        `TCP to ${hostname}:${port} timed out with no response. Your credentials are NOT the problem — the connection never got far enough to send them. AlgoIP is dropping traffic from this server. Add this server's egress IP (${out.directEgressIp || 'see directEgressIp above'}) to the allowlist in the AlgoIP panel. On Render, outbound IPs are listed under your service's Connect / Outbound settings and there are usually several — add them all.`
+      );
+    }
+    out.hints.push('Because raw TCP failed, no tunnel test was attempted.');
+    return res.json(out);
+  }
+
+  // 4. Full tunnel through the configured proxy
+  try {
+    const { ip, latencyMs } = await probeEgress(dispatcher);
+    out.tunnel = { ok: true, egressIp: ip, latencyMs };
+    if (ALGOIP_EXPECTED_IP && ip !== ALGOIP_EXPECTED_IP) {
+      out.hints.push(
+        `The tunnel works but egresses from ${ip}, not the expected ${ALGOIP_EXPECTED_IP}. Update ALGOIP_EXPECTED_IP, or the whitelist in the Kite console, so the two agree.`
+      );
+    } else if (ip === ALGOIP_EXPECTED_IP) {
+      out.hints.push('Everything checks out — tunnel works and egress matches the whitelisted address.');
+    } else {
+      out.hints.push(`Tunnel works, egressing from ${ip}. Set ALGOIP_EXPECTED_IP=${ip} and whitelist it in the Kite console.`);
+    }
+  } catch (err) {
+    const tunnel = classifyTunnelError(err);
+    out.tunnel = { ok: false, error: errDetail(err), classified: tunnel ? tunnel.code : null };
+    out.hints.push(
+      tunnel
+        ? `${tunnel.message} ${tunnel.hint}`
+        : `Raw TCP succeeded but the CONNECT tunnel did not complete: ${errDetail(err)}. This usually means the wrong scheme — try ALGOIP_PROTOCOL=${out.scheme === 'https' ? 'http' : 'https'}.`
+    );
+  }
+
+  res.json(out);
+}));
 
 /**
  * GET /api/proxy-check
@@ -757,6 +954,11 @@ app.get('/kite/callback', asyncRoute(async (req, res) => {
   try {
     const raw = await kiteRequest('POST', '/session/token', {
       form: { api_key: KITE_API_KEY, request_token: requestToken, checksum },
+      // One retry only: a request_token is single-use, so hammering it is
+      // pointless. budgetMs caps the entire sequence.
+      retries: 1,
+      deadlineMs: Math.min(14000, OAUTH_DEADLINE_MS),
+      budgetMs: OAUTH_DEADLINE_MS,
     });
     session = unwrapKite(raw);
   } catch (err) {
@@ -770,7 +972,18 @@ app.get('/kite/callback', asyncRoute(async (req, res) => {
       hint =
         ' — api.kite.trade was not reachable through the AlgoIP tunnel. Run /api/proxy-check to see whether the proxy scheme, credentials or host are at fault.';
     }
-    return sendPage(res, code, 'Token exchange failed', (err.message || 'Unknown error') + hint, '/dashboard?kite=failed');
+    return sendPage(
+      res,
+      code,
+      'Token exchange failed',
+      (err.message || 'Unknown error') + hint,
+      null,
+      [
+        { href: '/api/diagnostics', label: 'Run diagnostics &rarr;' },
+        { href: '/kite/login', label: 'Try login again' },
+        { href: '/dashboard?kite=failed', label: 'Back to dashboard' },
+      ]
+    );
   }
 
   await saveToken(session);
@@ -1106,7 +1319,10 @@ const DASHBOARD_HTML = `<!doctype html>
 
   <div class="card">
     <h2>AlgoIP egress check</h2>
-    <button id="proxyBtn" data-testid="proxy-check-button">Run /api/proxy-check</button>
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
+      <button id="proxyBtn" data-testid="proxy-check-button">Run /api/proxy-check</button>
+      <button id="diagBtn" data-testid="diagnostics-button">Full diagnostics</button>
+    </div>
     <div class="out mono" id="proxyOut" data-testid="proxy-check-output">Not run yet.</div>
   </div>
 
@@ -1283,6 +1499,39 @@ const DASHBOARD_HTML = `<!doctype html>
           '\\n\\n' + (d.hint || ''));
       }
     }).catch(function(e){ show(out, 'bad', 'Request failed: ' + e.message); })
+      .then(function(){ btn.disabled = false; });
+  };
+
+  // ---- full diagnostics ----------------------------------------------------
+  $('diagBtn').onclick = function(){
+    var out = $('proxyOut'); var btn = this;
+    btn.disabled = true; show(out, '', 'Running DNS, TCP and tunnel probes…');
+    api('/api/diagnostics').then(function(res){
+      var d = res.body || {};
+      var L = [];
+      L.push('THIS SERVER EGRESSES FROM: ' + (d.directEgressIp || 'unknown'));
+      L.push('  (allowlist this in the AlgoIP panel)');
+      L.push('');
+      L.push('proxy      ' + (d.proxyUri || 'NOT CONFIGURED'));
+      L.push('creds sent ' + (d.credentialsSupplied ? 'yes' : 'NO'));
+      if (d.dns){
+        L.push('dns        ' + (d.dns.resolved ? d.dns.addresses.join(', ') : 'FAILED ' + d.dns.error));
+      }
+      if (d.tcp){
+        L.push('tcp        ' + (d.tcp.reachable ? 'OK in ' + d.tcp.ms + 'ms' : 'FAILED ' + d.tcp.code + ' after ' + d.tcp.ms + 'ms'));
+        L.push('           ' + d.tcp.verdict);
+      }
+      if (d.tunnel){
+        L.push('tunnel     ' + (d.tunnel.ok ? 'OK egress ' + d.tunnel.egressIp + ' in ' + d.tunnel.latencyMs + 'ms'
+                                            : 'FAILED ' + (d.tunnel.classified || '') + ' ' + d.tunnel.error));
+      }
+      if (d.hints && d.hints.length){
+        L.push('');
+        d.hints.forEach(function(h){ L.push('* ' + h); });
+      }
+      var good = d.tunnel && d.tunnel.ok;
+      show(out, good ? 'ok' : 'warn', L.join('\\n'));
+    }).catch(function(e){ show(out, 'bad', 'Diagnostics failed: ' + e.message); })
       .then(function(){ btn.disabled = false; });
   };
 
