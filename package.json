@@ -1,20 +1,16 @@
-
 {
-  "name": "rre-kite-backend",
-  "version": "2.0.0",
-  "description": "Kite Connect backend (Render-ready) with stable proxy, session and token handling",
+  "name": "kite-algoip-backend",
+  "version": "1.0.0",
+  "description": "Zerodha Kite Connect trading backend with AlgoIP static egress proxy routing",
   "main": "server.js",
-  "private": true,
-  "engines": {
-    "node": ">=18"
-  },
+  "engines": { "node": ">=20" },
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js"
   },
   "dependencies": {
-    "express": "^4.19.2",
-    "pg": "^8.12.0",
-    "undici": "^6.19.8"
+    "express": "^4.21.2",
+    "pg": "^8.13.1",
+    "undici": "^7.2.0"
   }
 }

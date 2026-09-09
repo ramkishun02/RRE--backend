@@ -1,1535 +1,815 @@
-
-
-                       
-       
-
-"use strict";
-
-/*
- * Kite Connect backend (Render-ready)
+/**
+ * Zerodha Kite Connect Trading Backend + AlgoIP Static Egress Engine
+ * -----------------------------------------------------------------
+ * Node.js (Express) + undici + PostgreSQL
  *
- * Stability fixes in this version:
- *  1. AlgoIP proxy config no longer crashes (fixed ALGOIP_PASSWORD typo, unified
- *     env names, graceful degradation when misconfigured).
- *  2. Every outbound Kite call has a timeout + bounded retries with backoff.
- *  3. Kite session expiry (~6 AM IST daily, regulatory) is detected and handled:
- *     dead tokens are cleared automatically and endpoints return a clean
- *     KITE_SESSION_EXPIRED 401 with a loginUrl instead of random failures.
- *  4. /kite/callback is idempotent: replayed/duplicate request_tokens no longer
- *     produce scary errors (request_token is single-use and lives minutes).
- *  5. HTTP server tuned for proxies (keepAliveTimeout) + graceful SIGTERM
- *     shutdown so Render redeploys don't drop in-flight requests.
- *  6. Instrument list is cached with a TTL and in-flight de-duplication, token
- *     lookups are cached briefly, and a lightweight keep-alive pinger reduces
- *     cold-start disruption on the Render free tier.
+ * Every outbound call to api.kite.trade is dispatched through the AlgoIP
+ * authenticated CONNECT proxy so Zerodha sees the whitelisted static IP.
+ *
+ * Run:  node server.js
+ * Deps: express pg undici
  */
 
-const path = require("path");
-const crypto = require("crypto");
-const express = require("express");
-const { Pool } = require("pg");
-const { ProxyAgent, Agent, setGlobalDispatcher, fetch: undiciFetch } = require("undici");
-const UNDICI_VERSION = require("undici/package.json").version;
+'use strict';
 
-/* ------------------------------------------------------------------ */
-/* 1. Configuration                                                    */
-/* ------------------------------------------------------------------ */
+const path = require('path');
+const express = require('express');
+const crypto = require('crypto');
+const { Pool } = require('pg');
+const { ProxyAgent, Agent, request } = require('undici');
 
-function readEnv(...names) {
-  for (const name of names) {
-    const value = process.env[name];
-    if (value !== undefined && String(value).trim() !== "") {
-      return String(value).trim();
-    }
-  }
-  return "";
+// ---------------------------------------------------------------------------
+// Configuration
+// ---------------------------------------------------------------------------
+
+const PORT = process.env.PORT || 10000;
+
+const KITE_API_KEY = process.env.KITE_API_KEY || '';
+const KITE_API_SECRET = process.env.KITE_API_SECRET || '';
+const KITE_BASE = 'https://api.kite.trade';
+const KITE_LOGIN_BASE = 'https://kite.zerodha.com/connect/login';
+
+const ALGOIP_HOST = process.env.ALGOIP_HOST || '';
+const ALGOIP_PORT = process.env.ALGOIP_PORT || '';
+const ALGOIP_USER = process.env.ALGOIP_USER || '';
+const ALGOIP_PASSWORD = process.env.ALGOIP_PASSWORD || '';
+const ALGOIP_EXPECTED_IP = process.env.ALGOIP_EXPECTED_IP || '';
+
+const DATABASE_URL = process.env.DATABASE_URL || '';
+
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000; // UTC+05:30, India has no DST
+const SESSION_RESET_HOUR_IST = 6;           // regulatory daily invalidation ~06:00 IST
+const SWEEP_INTERVAL_MS = 15 * 60 * 1000;   // profile probe every 15 minutes
+
+// ---------------------------------------------------------------------------
+// Tiny logger
+// ---------------------------------------------------------------------------
+
+function log(level, msg, extra) {
+  const line = `[${new Date().toISOString()}] [${level}] ${msg}`;
+  if (extra !== undefined) console.log(line, extra);
+  else console.log(line);
 }
 
-const PORT = Number(readEnv("PORT") || 10000);
+// ---------------------------------------------------------------------------
+// PHASE 1 FIX #2 — AlgoIP dispatcher
+//
+// The `fetch failed` / `SocketError: other side closed` failures came from
+// undici holding a pooled socket in the CONNECT tunnel longer than the proxy
+// keeps it alive. Short idle keep-alive + pipelining disabled means we never
+// hand a half-dead socket to a new request.
+// ---------------------------------------------------------------------------
 
-const KITE_API_KEY = readEnv("KITE_API_KEY");
-const KITE_API_SECRET = readEnv("KITE_API_SECRET");
+const DISPATCHER_OPTS = {
+  keepAliveTimeout: 10000,     // drop idle sockets after 10s (proxy closes ~15-30s)
+  keepAliveMaxTimeout: 15000,  // hard ceiling regardless of server hints
+  pipelining: 0,               // one in-flight request per socket, no pipelining
+  connections: 8,
+  connectTimeout: 15000,
+  headersTimeout: 30000,
+  bodyTimeout: 30000,
+};
 
-const BASE_URL = readEnv("BASE_URL") || "https://rre-backend-1.onrender.com";
-const CALLBACK_URL =
-  readEnv("KITE_REDIRECT_URL", "KITE_CALLBACK_URL") || `${BASE_URL}/kite/callback`;
-const DASHBOARD_URL = readEnv("DASHBOARD_URL") || `${BASE_URL}/dashboard`;
-
-const DATABASE_URL = readEnv("DATABASE_URL");
-
-/* AlgoIP proxy - canonical names: ALGOIP_* (legacy ALGO_IP_* aliases accepted) */
-const ALGOIP_HOST = readEnv("ALGOIP_HOST", "ALGO_IP_PROXY_HOST", "ALGO_IP_HOST");
-const ALGOIP_PORT = readEnv("ALGOIP_ID", "ALGO_IP_PROXY_PORT", "ALGO_IP_PORT");
-const ALGOIP_USER = readEnv("ALGOIP_NODE", "ALGO_IP_PROXY_USER", "ALGO_IP_USER");
-const ALGOIP_PASSWORD = readEnv(
-  "ALGOIP_PASSWORD",
-  "ALGO_IP_PROXY_PASSWORD",
-  "ALGO_IP_PASSWORD"
-);
-const ALGOIP_ENABLED = readEnv("ALGOIP_PER") !== "false";
-/* The static IPv4 your AlgoIP node egresses from (algoip.in -> My IPs card).
-   When set, /api/proxy-check verifies the actual routed IP against it and
-   FAILS LOUDLY if traffic is bypassing the proxy (e.g. egressing directly
-   from the hosting provider's shared pool). */
-const ALGOIP_EXPECTED_IP = (readEnv("ALGOIP_EXPECTED_IP", "ALGO_IP_EXPECTED_IP") || "")
-  .trim()
-  .toLowerCase();
-
-const KITE_BASE = "https://api.kite.trade";
-const KITE_TIMEOUT_MS = Number(readEnv("KITE_TIMEOUT_MS") || 12000);
-const KITE_MAX_RETRIES = Number(readEnv("KITE_MAX_RETRIES") || 2);
-
-const TOKEN_CACHE_TTL_MS = 30 * 1000;
-const INSTRUMENTS_TTL_MS = Number(readEnv("INSTRUMENTS_TTL_MS") || 6 * 60 * 60 * 1000);
-const SESSION_SWEEP_INTERVAL_MS =
-  Number(readEnv("SESSION_SWEEP_INTERVAL_MS") || 15 * 60 * 1000);
-const KEEP_ALIVE_ENABLED = readEnv("KEEP_ALIVE") !== "false";
-const KEEP_ALIVE_INTERVAL_MS = Number(readEnv("KEEP_ALIVE_INTERVAL_MS") || 4 * 60 * 1000);
-
-const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000; // Kite login_time is IST (UTC+5:30)
-
-/* ------------------------------------------------------------------ */
-/* 2. AlgoIP proxy                                                     */
-/* ------------------------------------------------------------------ */
-
-function buildProxyUrl() {
-  if (!ALGOIP_ENABLED) {
-    return { url: "", error: null, reason: "disabled via ALGOIP_ENABLED=false" };
-  }
-  if (!ALGOIP_HOST || !ALGOIP_PORT || !ALGOIP_USER || !ALGOIP_PASSWORD) {
-    return { url: "", error: null, reason: "missing host/port/username/password" };
+function buildDispatcher() {
+  if (!ALGOIP_HOST || !ALGOIP_PORT) {
+    log('WARN', 'AlgoIP proxy not configured — using DIRECT egress (Kite will reject non-whitelisted IPs)');
+    return new Agent(DISPATCHER_OPTS);
   }
 
-  const portNumber = Number(ALGOIP_PORT);
-  if (!Number.isInteger(portNumber) || portNumber < 1 || portNumber > 65535) {
-    return {
-      url: "",
-      error: "Invalid AlgoIP proxy port. It must be a number between 1 and 65535.",
-      reason: "invalid port"
-    };
-  }
+  const token =
+    ALGOIP_USER || ALGOIP_PASSWORD
+      ? 'Basic ' + Buffer.from(`${ALGOIP_USER}:${ALGOIP_PASSWORD}`).toString('base64')
+      : undefined;
 
+  return new ProxyAgent({
+    uri: `http://${ALGOIP_HOST}:${ALGOIP_PORT}`,
+    token,
+    ...DISPATCHER_OPTS,
+    // options applied to the tunnelled connection pool as well
+    proxyTls: { timeout: 15000 },
+    requestTls: { timeout: 15000 },
+  });
+}
+
+let dispatcher = buildDispatcher();
+
+/** Tear down the poisoned pool and build a clean one (used by the retry path). */
+async function recycleDispatcher(reason) {
+  log('WARN', `Recycling AlgoIP dispatcher: ${reason}`);
+  const old = dispatcher;
+  dispatcher = buildDispatcher();
   try {
-    const candidate = new URL(
-      `http://${encodeURIComponent(ALGOIP_USER)}:${encodeURIComponent(
-        ALGOIP_PASSWORD
-      )}@${ALGOIP_HOST}:${portNumber}`
-    );
-    if (!candidate.hostname) {
-      return { url: "", error: "Missing AlgoIP proxy hostname.", reason: "bad host" };
-    }
-    return { url: candidate.toString(), error: null, reason: "configured" };
-  } catch (error) {
-    return {
-      url: "",
-      error:
-        "Invalid AlgoIP proxy settings. Check host, port, username, and password.",
-      reason: "unparsable"
-    };
+    await old.close();
+  } catch (_) {
+    try { await old.destroy(); } catch (_) { /* noop */ }
   }
 }
 
-const proxy = buildProxyUrl();
-const proxyUrl = proxy.url;
+const TRANSIENT_CODES = new Set([
+  'UND_ERR_SOCKET',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_BODY_TIMEOUT',
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'EPIPE',
+  'ETIMEDOUT',
+  'EAI_AGAIN',
+]);
 
-/* One shared ProxyAgent for the whole process. Two defence layers:
-   1. setGlobalDispatcher (ambient) - belt and suspenders.
-   2. proxiedFetch() below binds the agent EXPLICITLY to every outbound
-      request, because global-dispatcher wiring has proven unreliable across
-      Node/undici versions in hosting environments (traffic silently
-      egressed from the host's own IP pool instead of the proxy). */
-let proxyAgent = null;
-
-if (proxyUrl) {
-  try {
-    proxyAgent = new ProxyAgent({
-      uri: proxyUrl,
-      connect: { timeout: 10000 },
-      keepAliveTimeout: 60000,
-      keepAliveMaxTimeout: 600000
-    });
-    setGlobalDispatcher(proxyAgent);
-    console.log(
-      `[proxy] AlgoIP proxy enabled: ${ALGOIP_HOST}:${ALGOIP_PORT}` +
-        (ALGOIP_EXPECTED_IP ? ` (expected egress IP ${ALGOIP_EXPECTED_IP})` : "")
-    );
-    if (ALGOIP_EXPECTED_IP) {
-      console.log(
-        "[proxy] Verify egress at /api/proxy-check after boot; it will fail " +
-          "loudly if traffic bypasses the proxy."
-      );
-    }
-  } catch (error) {
-    proxy.error = error.message;
-    console.warn(`[proxy] Failed to initialise AlgoIP proxy: ${error.message}`);
-    console.warn("[proxy] Continuing WITHOUT the proxy. Fix the credentials in Render.");
-  }
-} else if (proxy.error) {
-  /* Misconfiguration is logged loudly but is NOT fatal: the app still boots,
-     serves the dashboard, and /health reports exactly what is wrong. */
-  console.warn(`[proxy] ${proxy.error} Continuing WITHOUT the proxy.`);
-} else if (ALGOIP_ENABLED) {
-  console.warn(
-    `[proxy] AlgoIP proxy is not configured (${proxy.reason}). Continuing WITHOUT ` +
-      "the proxy. Set ALGOIP_HOST, ALGOIP_PORT, ALGOIP_USER and ALGOIP_PASSWORD in Render."
-  );
+function isTransient(err) {
+  if (!err) return false;
+  const code = err.code || (err.cause && err.cause.code);
+  if (code && TRANSIENT_CODES.has(code)) return true;
+  const msg = String(err.message || '');
+  return /fetch failed|other side closed|socket hang up|terminated/i.test(msg);
 }
 
-/* All outbound HTTP goes through this single gate.
-   - If the proxy is configured, the ProxyAgent is bound EXPLICITLY to the
-     request ({ dispatcher }), which cannot be bypassed by fetch()-internal
-     default-dispatcher selection.
-   - Loopback/localhost targets are never proxied (they are local).
-   - Without a proxy configured, requests go direct through one shared Agent.
-   Returns undici's Response, so callers use response.text()/json() as usual. */
-let directAgent = null;
-
-function proxiedFetch(url, options = {}) {
-  const target = String(url);
-  const isLocal =
-    target.startsWith("http://127.0.0.1") ||
-    target.startsWith("http://localhost") ||
-    target.startsWith("http://[::1]");
-  const agent = proxyAgent && !isLocal ? proxyAgent : (directAgent ||= new Agent());
-  return undiciFetch(target, { ...options, dispatcher: agent });
-}
-
-/* ------------------------------------------------------------------ */
-/* 3. Express app                                                      */
-/* ------------------------------------------------------------------ */
-
-const app = express();
-app.set("trust proxy", 1); /* behind Render's reverse proxy */
-app.disable("x-powered-by");
-
-app.use(express.json({ limit: "100kb" }));
-app.use(express.urlencoded({ extended: true, limit: "100kb" }));
-
-/* Never serve source/config files through express.static */
-const BLOCKED_STATIC_PATH =
-  /(^|\/)(server\.js|package(-lock)?\.json|todo\.md|DEPLOYMENT\.md|README\.md|node_modules|\.git|\.env)(\.|$|\/)/i;
-app.use((req, res, next) => {
-  if (BLOCKED_STATIC_PATH.test(req.path)) {
-    return res.status(403).json({ success: false, message: "Forbidden." });
-  }
-  next();
-});
-
-app.use(express.static(__dirname, { dotfiles: "ignore", index: false }));
-
-/* ------------------------------------------------------------------ */
-/* 4. Small helpers                                                    */
-/* ------------------------------------------------------------------ */
-
-function delay(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function checksum(apiKey, requestToken, apiSecret) {
-  return crypto
-    .createHash("sha256")
-    .update(apiKey + requestToken + apiSecret)
-    .digest("hex");
-}
-
-function escapeHtml(value) {
-  return String(value ?? "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
-}
-
-function parseCsvLine(line) {
-  const values = [];
-  let value = "";
-  let insideQuotes = false;
-
-  for (let index = 0; index < line.length; index += 1) {
-    const character = line[index];
-
-    if (character === '"') {
-      if (insideQuotes && line[index + 1] === '"') {
-        value += '"';
-        index += 1;
-      } else {
-        insideQuotes = !insideQuotes;
-      }
-    } else if (character === "," && !insideQuotes) {
-      values.push(value.trim());
-      value = "";
-    } else {
-      value += character;
+/**
+ * Single funnel for every Kite HTTP call.
+ * Retries transient socket failures on a freshly built dispatcher.
+ */
+async function kiteRequest(method, urlPath, { query, form, accessToken, retries = 2 } = {}) {
+  const url = new URL(urlPath.startsWith('http') ? urlPath : KITE_BASE + urlPath);
+  if (query) {
+    for (const [k, v] of Object.entries(query)) {
+      if (v === undefined || v === null) continue;
+      if (Array.isArray(v)) v.forEach((item) => url.searchParams.append(k, item));
+      else url.searchParams.set(k, String(v));
     }
   }
 
-  values.push(value.trim());
-  return values;
-}
+  const headers = { 'X-Kite-Version': '3', Accept: 'application/json' };
+  if (accessToken) headers.Authorization = `token ${KITE_API_KEY}:${accessToken}`;
 
-function sendPage(res, title, message, success = false, redirectAfterSeconds = 0) {
-  const color = success ? "#16a34a" : "#dc2626";
-  const icon = success ? "✓" : "!";
-  const action = success
-    ? `<a href="${escapeHtml(DASHBOARD_URL)}">Continue to Dashboard</a>`
-    : '<a href="/kite/login">Try Again</a>';
-  const refresh = redirectAfterSeconds
-    ? `<meta http-equiv="refresh" content="${Number(redirectAfterSeconds)};url=/kite/login">`
-    : "";
-
-  return res.send(`
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-      <meta charset="UTF-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      ${refresh}
-      <title>${escapeHtml(title)}</title>
-      <style>
-        body {
-          margin: 0;
-          min-height: 100vh;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          background: #08111f;
-          color: white;
-          font-family: Arial, sans-serif;
-          padding: 20px;
-          box-sizing: border-box;
-        }
-        .card {
-          width: 100%;
-          max-width: 420px;
-          padding: 30px 22px;
-          text-align: center;
-          background: #111c2e;
-          border: 1px solid #263853;
-          border-radius: 18px;
-        }
-        .icon {
-          width: 65px;
-          height: 65px;
-          margin: 0 auto 18px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          border-radius: 50%;
-          background: ${color};
-          font-size: 40px;
-          font-weight: bold;
-        }
-        h1 { font-size: 22px; margin: 0 0 12px; }
-        p { color: #c1ccdc; line-height: 1.5; white-space: pre-wrap; }
-        a {
-          display: inline-block;
-          margin-top: 22px;
-          padding: 12px 18px;
-          background: #2563eb;
-          color: white;
-          text-decoration: none;
-          border-radius: 8px;
-        }
-      </style>
-    </head>
-    <body>
-      <div class="card">
-        <div class="icon">${icon}</div>
-        <h1>${escapeHtml(title)}</h1>
-        <p>${escapeHtml(message)}</p>
-        ${action}
-      </div>
-    </body>
-    </html>
-  `);
-}
-
-function serveIndex(res) {
-  res.sendFile(path.join(__dirname, "index.html"), (error) => {
-    if (error) {
-      res.status(500).send(
-        "index.html was not found next to server.js. Deploy your frontend files " +
-          "alongside this backend (index.html, CSS, JS)."
-      );
-    }
-  });
-}
-
-/* Kite returns login_time as an IST string ("YYYY-MM-DD HH:MM:SS"), but the
-   database column type decides what comes back on read: a TEXT column returns
-   the string, while timestamp/timestamptz columns return a JS Date. This
-   helper normalises every variant into a UTC epoch instant (or null). */
-function loginTimeToInstantMs(loginTime) {
-  if (loginTime instanceof Date) {
-    const ms = loginTime.getTime();
-    return Number.isFinite(ms) ? ms : null;
+  let body;
+  if (form) {
+    headers['Content-Type'] = 'application/x-www-form-urlencoded';
+    body = new URLSearchParams(
+      Object.fromEntries(Object.entries(form).filter(([, v]) => v !== undefined && v !== null))
+    ).toString();
   }
 
-  const raw = String(loginTime ?? "").trim();
-  if (!raw) return null;
-
-  /* ISO 8601 with an explicit timezone (e.g. "2026-09-05T19:13:05.000Z" or
-     "2026-09-05 19:13:05+00:00") - the instant is unambiguous, parse direct. */
-  if (
-    /\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})/.test(raw)
-  ) {
-    const ms = Date.parse(raw);
-    return Number.isFinite(ms) ? ms : null;
-  }
-
-  /* Kite's raw format carries no timezone marker and is IST (UTC+5:30). */
-  const match = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/.exec(raw);
-  if (!match) return null;
-
-  return (
-    Date.UTC(
-      Number(match[1]),
-      Number(match[2]) - 1,
-      Number(match[3]),
-      Number(match[4]),
-      Number(match[5]),
-      Number(match[6])
-    ) - IST_OFFSET_MS
-  );
-}
-
-/* Canonical storage form: UTC ISO string. Safe for TEXT columns (readable,
-   self-describing) and for timestamp/timestamptz columns (Postgres parses the
-   Z suffix as UTC, so no silent timezone shifting can occur). */
-function normalizeLoginTime(loginTime) {
-  const ms = loginTimeToInstantMs(loginTime);
-  return ms === null ? null : new Date(ms).toISOString();
-}
-
-/* Kite access tokens expire around 6 AM IST the following day (regulatory
-   requirement per Kite docs). Returns the next 6 AM IST boundary after the
-   login instant, in UTC ISO format, or null when the login time is unknown. */
-function approximateTokenExpiry(loginTime) {
-  const loginUtcMs = loginTimeToInstantMs(loginTime);
-  if (loginUtcMs === null) return null;
-
-  const istClock = new Date(loginUtcMs + IST_OFFSET_MS);
-  let expiryUtcMs =
-    Date.UTC(
-      istClock.getUTCFullYear(),
-      istClock.getUTCMonth(),
-      istClock.getUTCDate(),
-      6,
-      0,
-      0
-    ) - IST_OFFSET_MS;
-  if (loginUtcMs >= expiryUtcMs) {
-    expiryUtcMs += 24 * 60 * 60 * 1000;
-  }
-  return new Date(expiryUtcMs).toISOString();
-}
-
-class KiteTokenError extends Error {
-  constructor(message) {
-    super(message);
-    this.name = "KiteTokenError";
-  }
-}
-
-/* ------------------------------------------------------------------ */
-/* 5. Database                                                         */
-/* ------------------------------------------------------------------ */
-
-let db = null;
-
-if (DATABASE_URL) {
-  const needsSsl = !/localhost|127\.0\.0\.1/.test(DATABASE_URL);
-  db = new Pool({
-    connectionString: DATABASE_URL,
-    max: 5,
-    idleTimeoutMillis: 30000,
-    connectionTimeoutMillis: 10000,
-    ssl: needsSsl ? { rejectUnauthorized: false } : undefined
-  });
-
-  db.on("error", (error) => {
-    console.error("[db] Idle client error:", error.message);
-  });
-}
-
-async function withRetry(label, task, attempts = 3, waitMs = 2000) {
-  let lastError = null;
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+  let lastErr;
+  for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      return await task();
-    } catch (error) {
-      lastError = error;
-      console.error(
-        `[db] ${label} attempt ${attempt}/${attempts} failed: ${error.message}`
-      );
-      if (attempt < attempts) await delay(waitMs);
+      const res = await request(url, { method, headers, body, dispatcher });
+      const text = await res.body.text();
+      let parsed = null;
+      try { parsed = text ? JSON.parse(text) : null; } catch (_) { parsed = { raw: text }; }
+      return { status: res.statusCode, body: parsed, text };
+    } catch (err) {
+      lastErr = err;
+      if (attempt < retries && isTransient(err)) {
+        await recycleDispatcher(err.code || err.message);
+        await new Promise((r) => setTimeout(r, 250 * (attempt + 1)));
+        continue;
+      }
+      break;
     }
   }
-  throw lastError;
+
+  const wrapped = new Error(`Upstream request failed: ${lastErr && lastErr.message}`);
+  wrapped.code = 'UPSTREAM_UNREACHABLE';
+  wrapped.cause = lastErr;
+  throw wrapped;
 }
 
-async function initializeDatabase() {
-  if (!db) {
-    console.warn("[db] DATABASE_URL is not configured. Kite tokens cannot be saved.");
+// ---------------------------------------------------------------------------
+// Kite error mapping
+// ---------------------------------------------------------------------------
+
+function loginUrl() {
+  return `${KITE_LOGIN_BASE}?api_key=${encodeURIComponent(KITE_API_KEY)}&v=3`;
+}
+
+/**
+ * Normalizes a Kite response into either the payload or a thrown ApiError with
+ * a standardized HTTP status. `TokenException` always surfaces as
+ * KITE_SESSION_EXPIRED / 401 with the login URL so the UI can re-auth.
+ */
+function unwrapKite(res) {
+  if (res.status >= 200 && res.status < 300 && res.body && res.body.status === 'success') {
+    return res.body.data;
+  }
+
+  const errType = (res.body && res.body.error_type) || 'GeneralException';
+  const message = (res.body && res.body.message) || `Kite responded ${res.status}`;
+
+  const err = new Error(message);
+  if (errType === 'TokenException' || res.status === 403 || res.status === 401) {
+    err.status = 401;
+    err.code = 'KITE_SESSION_EXPIRED';
+    err.loginUrl = loginUrl();
+  } else if (errType === 'InputException') {
+    err.status = 400;
+    err.code = 'KITE_INVALID_INPUT';
+  } else if (errType === 'NetworkException' || errType === 'GatewayException') {
+    err.status = 502;
+    err.code = 'KITE_UPSTREAM_ERROR';
+  } else if (errType === 'OrderException') {
+    err.status = 422;
+    err.code = 'KITE_ORDER_REJECTED';
+  } else if (res.status === 429) {
+    err.status = 429;
+    err.code = 'KITE_RATE_LIMITED';
+  } else {
+    err.status = 502;
+    err.code = 'KITE_ERROR';
+  }
+  err.errorType = errType;
+  throw err;
+}
+
+// ---------------------------------------------------------------------------
+// PostgreSQL token persistence (single tenant, primary record id = 1)
+// ---------------------------------------------------------------------------
+
+const pool = DATABASE_URL
+  ? new Pool({
+      connectionString: DATABASE_URL,
+      ssl: /localhost|127\.0\.0\.1/.test(DATABASE_URL) ? false : { rejectUnauthorized: false },
+      max: 5,
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 10000,
+    })
+  : null;
+
+async function initDb() {
+  if (!pool) {
+    log('WARN', 'DATABASE_URL not set — token persistence disabled (memory only)');
     return;
   }
-
-  await withRetry("create kite_tokens table", async () => {
-    await db.query(`
-      CREATE TABLE IF NOT EXISTS kite_tokens (
-        id INTEGER PRIMARY KEY,
-        access_token TEXT NOT NULL,
-        user_id TEXT,
-        login_time TEXT,
-        updated_at TIMESTAMPTZ DEFAULT NOW()
-      )
-    `);
-    await db.query(`
-      ALTER TABLE kite_tokens
-      ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ
-    `);
-    await db.query(`
-      UPDATE kite_tokens
-      SET updated_at = NOW()
-      WHERE updated_at IS NULL
-    `);
-  });
-
-  console.log("[db] Database initialized.");
-}
-
-let tokenCache = { value: null, fetchedAt: 0 };
-
-function invalidateTokenCache() {
-  tokenCache = { value: null, fetchedAt: 0 };
-}
-
-async function getStoredToken(force = false) {
-  if (!db) return null;
-  if (
-    !force &&
-    tokenCache.value &&
-    Date.now() - tokenCache.fetchedAt < TOKEN_CACHE_TTL_MS
-  ) {
-    return tokenCache.value;
-  }
-
-  const result = await db.query(`
-    SELECT access_token, user_id, login_time
-    FROM kite_tokens
-    WHERE id = 1
-    LIMIT 1
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS kite_tokens (
+      id            INTEGER PRIMARY KEY,
+      user_id       TEXT,
+      user_name     TEXT,
+      access_token  TEXT NOT NULL,
+      public_token  TEXT,
+      login_time    TIMESTAMPTZ NOT NULL,
+      updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
   `);
-  const value = result.rows[0] || null;
-  if (value) {
-    /* The column type decides the JS type: TEXT gives Kite's IST string,
-       timestamp(tz) gives a Date. Normalise so every consumer downstream
-       (auth status, health, expiry math) sees a canonical UTC ISO string. */
-    value.login_time = normalizeLoginTime(value.login_time) ?? value.login_time;
-  }
-  tokenCache = { value, fetchedAt: Date.now() };
-  return value;
+  log('INFO', 'kite_tokens table ready');
 }
 
-async function saveKiteToken(accessToken, userId, loginTime) {
-  if (!db) {
-    throw new Error("DATABASE_URL is not configured.");
-  }
+/** In-memory cache mirror of the single DB row. */
+let tokenCache = null;
 
-  await db.query(
-    `
-      INSERT INTO kite_tokens
-        (id, access_token, user_id, login_time, updated_at)
-      VALUES
-        (1, $1, $2, $3, NOW())
-      ON CONFLICT (id)
-      DO UPDATE SET
-        access_token = EXCLUDED.access_token,
-        user_id = EXCLUDED.user_id,
-        login_time = EXCLUDED.login_time,
-        updated_at = NOW()
-    `,
-    [accessToken, userId || null, loginTime || null]
-  );
-  invalidateTokenCache();
+/** Kite returns login_time as "YYYY-MM-DD HH:MM:SS" in IST with no offset. */
+function normalizeIstLoginTime(raw) {
+  if (!raw) return new Date();
+  if (raw instanceof Date) return raw;
+  const m = String(raw).match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/);
+  if (!m) {
+    const d = new Date(raw);
+    return isNaN(d.getTime()) ? new Date() : d;
+  }
+  const [, y, mo, d, h, mi, s] = m.map(Number);
+  // Interpret the wall-clock as IST, store as a true UTC instant.
+  return new Date(Date.UTC(y, mo - 1, d, h, mi, s) - IST_OFFSET_MS);
 }
 
-async function deleteKiteToken() {
-  if (!db) return;
-  await db.query("DELETE FROM kite_tokens WHERE id = 1");
-  invalidateTokenCache();
-}
-
-/* ------------------------------------------------------------------ */
-/* 6. Kite HTTP layer (timeout + retry + error mapping)                */
-/* ------------------------------------------------------------------ */
-
-function isRetryableStatus(status) {
-  return status === 429 || status >= 500;
-}
-
-function kiteAuthHeaders(accessToken) {
-  return { Authorization: `token ${KITE_API_KEY}:${accessToken}` };
-}
-
-/* Returns { ok, status, text, json } and never throws for network problems.
-   networkError results carry { networkError: true, code, detail }. */
-async function kiteRequest(pathname, { method = "GET", headers = {}, body = null } = {}) {
-  let lastNetworkError = null;
-
-  for (let attempt = 0; attempt <= KITE_MAX_RETRIES; attempt += 1) {
-    const requestOptions = {
-      method,
-      headers: { "X-Kite-Version": "3", ...headers },
-      signal: AbortSignal.timeout(KITE_TIMEOUT_MS)
-    };
-    if (body !== null) requestOptions.body = body;
-
-    try {
-      const response = await proxiedFetch(`${KITE_BASE}${pathname}`, requestOptions);
-      const text = await response.text();
-      let json = null;
-      try {
-        json = text ? JSON.parse(text) : null;
-      } catch (_) {
-        json = null; /* CSV responses (instruments) are not JSON */
-      }
-
-      if (isRetryableStatus(response.status) && attempt < KITE_MAX_RETRIES) {
-        console.warn(
-          `[kite] ${method} ${pathname} -> HTTP ${response.status}; retrying ` +
-            `(${attempt + 1}/${KITE_MAX_RETRIES})`
-        );
-        await delay(400 * 2 ** attempt + Math.floor(Math.random() * 250));
-        continue;
-      }
-
-      return { ok: response.ok, status: response.status, text, json };
-    } catch (error) {
-      lastNetworkError = error;
-      if (attempt < KITE_MAX_RETRIES) {
-        const code = error?.cause?.code || error?.code || error?.name || "NETWORK_ERROR";
-        console.warn(
-          `[kite] ${method} ${pathname} -> network error (${code}); retrying ` +
-            `(${attempt + 1}/${KITE_MAX_RETRIES})`
-        );
-        await delay(400 * 2 ** attempt + Math.floor(Math.random() * 250));
-        continue;
-      }
-    }
-  }
-
-  const code =
-    lastNetworkError?.cause?.code ||
-    lastNetworkError?.code ||
-    lastNetworkError?.name ||
-    "NETWORK_ERROR";
-  const detail =
-    lastNetworkError?.cause?.message ||
-    lastNetworkError?.message ||
-    "Unable to reach Kite.";
-  return { ok: false, status: 0, text: "", json: null, networkError: true, code, detail };
-}
-
-function isTokenError(kiteJson) {
-  const errorType = String(kiteJson?.error_type || "").toLowerCase();
-  const message = String(kiteJson?.message || "").toLowerCase();
-  return (
-    errorType.includes("token") ||
-    message.includes("access_token") ||
-    message.includes("api_key or") ||
-    message.includes("session expired") ||
-    message.includes("too many sessions")
-  );
-}
-
-/* Central error mapping used by the API routes. Returns true when it has
-   written a response (so routes can `return`). */
-async function handleKiteFailure(res, response, fallbackMessage) {
-  if (response.networkError) {
-    return res.status(502).json({
-      success: false,
-      code: response.code,
-      message: `${fallbackMessage} (${response.code}). ${response.detail}`
-    });
-  }
-
-  if (isTokenError(response.json)) {
-    try {
-      await deleteKiteToken();
-    } catch (_) {
-      /* best effort */
-    }
-    return res.status(401).json({
-      success: false,
-      code: "KITE_SESSION_EXPIRED",
-      message: "Your Kite session expired. Log in again.",
-      loginUrl: "/kite/login"
-    });
-  }
-
-  return res.status(response.status || 502).json({
-    success: false,
-    message: response.json?.message || fallbackMessage,
-    errorType: response.json?.error_type || null
-  });
-}
-
-/* Liveness probe against /user/profile, cached briefly to stay inside
-   Kite's rate limits. */
-let sessionCheckCache = { key: null, alive: false, checkedAt: 0 };
-
-async function isSessionAlive(accessToken, { force = false } = {}) {
-  if (!accessToken) return false;
-
-  const key = accessToken.slice(-12);
-  if (
-    !force &&
-    sessionCheckCache.key === key &&
-    Date.now() - sessionCheckCache.checkedAt < TOKEN_CACHE_TTL_MS
-  ) {
-    return sessionCheckCache.alive;
-  }
-
-  const response = await kiteRequest("/user/profile", {
-    headers: kiteAuthHeaders(accessToken)
-  });
-  const alive = Boolean(response.ok && response.json?.status === "success");
-  sessionCheckCache = { key, alive, checkedAt: Date.now() };
-  return alive;
-}
-
-/* --------------------------------------------*/
-/* 7. Instruments cache                                                */
-/* ------------------------------------------------------------------ */
-
-let instrumentsCache = { items: [], fetchedAt: 0, promise: null };
-
-async function downloadInstruments(accessToken) {
-  const response = await kiteRequest("/instruments/NSE", {
-    headers: kiteAuthHeaders(accessToken)
-  });
-
-  if (response.networkError) {
-    throw new Error(
-      `Instruments download failed (${response.code}): ${response.detail}`
-    );
-  }
-  if (!response.ok) {
-    if (isTokenError(response.json)) {
-      throw new KiteTokenError(response.json?.message || "Kite session expired.");
-    }
-    throw new Error(
-      response.json?.message ||
-        response.text.slice(0, 200) ||
-        "Unable to download NSE instruments."
-    );
-  }
-
-  const lines = response.text.split(/\r?\n/).filter((line) => line.trim());
-  if (lines.length < 2) return [];
-
-  const headings = parseCsvLine(lines.shift());
-  const symbolIndex = headings.indexOf("tradingsymbol");
-  const nameIndex = headings.indexOf("name");
-  const tokenIndex = headings.indexOf("instrument_token");
-
-  if (symbolIndex === -1) {
-    throw new Error("The NSE instruments response is missing tradingsymbol.");
-  }
-
-  return lines
-    .map(parseCsvLine)
-    .map((columns) => ({
-      exchange: "NSE",
-      symbol: columns[symbolIndex] || "",
-      name: columns[nameIndex] || columns[symbolIndex] || "",
-      instrumentToken: columns[tokenIndex] || ""
-    }))
-    .filter((item) => item.symbol);
-}
-async function getInstruments() {
-  const token = await getStoredToken();
-  if (!KITE_API_KEY || !token?.access_token) return [];
-
-  if (
-    instrumentsCache.items.length &&
-    Date.now() - instrumentsCache.fetchedAt < INSTRUMENTS_TTL_MS
-  ) {
-    return instrumentsCache.items;
-  }
-
-  /* De-duplicate concurrent downloads (dashboard fires several first-load calls) */
-  if (instrumentsCache.promise) {
-    return instrumentsCache.promise;
-  }
-
-instrumentsCache.promise = downloadInstruments(token.access_token)
-    .then((items) => {
-      instrumentsCache = { items, fetchedAt: Date.now(), promise: null };
-      console.log(`[kite] cached ${items.length} NSE instruments`);
-      return items;
-    })
-    .catch((error) => {
-      instrumentsCache.promise = null;
-      throw error;
-    });
-
-  return instrumentsCache.promise;
-}
-
-
-/* ------------------------------------------------------------------ 8
-  Routes                                                           */
-/* ------------------------------------------------------------------ */
-
-app.get("/", (req, res) => {
-  serveIndex(res);
-});
-
-app.get("/health", async (req, res) => {
-  try {
-    const token = await getStoredToken();
-    res.json({
-      success: true,
-      backend: true,
-      uptimeSeconds: Math.floor(process.uptime()),
-      kiteConfigured: Boolean(KITE_API_KEY && KITE_API_SECRET),
-      databaseConfigured: Boolean(db),
-      accessTokenConfigured: Boolean(token?.access_token),
-
-userId: token?.user_id || null,
-      loginTime: token?.login_time || null,
-      approxTokenExpiry: approximateTokenExpiry(token?.login_time),
-      instrumentsCached: instrumentsCache.items.length,
-      instrumentsCacheAgeSeconds: instrumentsCache.fetchedAt
-        ? Math.floor((Date.now() - instrumentsCache.fetchedAt) / 1000)
-        : null,
-      callbackUrl: CALLBACK_URL,
-      dashboardUrl: DASHBOARD_URL,
-      proxyConfigured: Boolean(proxyUrl),
-      proxyAgentBound: Boolean(proxyAgent),
-      proxyHost: proxyUrl ? ALGOIP_HOST : null,
-      proxyPort: proxyUrl ? Number(ALGOIP_PORT) : null,
-      proxyExpectedIp: ALGOIP_EXPECTED_IP || null,
-      proxyError: proxy.error || null,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-}
-});
-
-app.get("/api/proxy-check", async (req, res) => {
-  if (!proxyUrl) {
-    const hint = proxy.error
-      ? ` ${proxy.error}`
-      : " Set ALGOIP_HOST, ALGOIP_PORT, ALGOIP_USER and ALGOIP_PASSWORD in Render.";
-    return res
-      .status(503)
-      .json({ success: false, message: `AlgoIP proxy is not configured.${hint}` });
-  }
-
-  try {
-    const response = await proxiedFetch("https://ip64.algoip.in/all?format=json", {
-      signal: AbortSignal.timeout(10000)
-    });
-    const data = await response.json().catch(() => ({}));
-    const routedIp = (data.ip || "").trim().toLowerCase();
-
-    /* Self-diagnosis: the echoed IP must be the AlgoIP static IP when one is
-       declared. A hosting-provider IP here means traffic bypassed the proxy
-       (the exact failure that produced a shared Render egress IP in a
-       Zerodha whitelist attempt and a silent mismatch for days). */
-    const expectedIp = ALGOIP_EXPECTED_IP || null;
-    const ipMatches = Boolean(expectedIp && routedIp && routedIp === expectedIp);
-    const looksLikeHostingEgress =
-      routedIp && expectedIp && routedIp !== expectedIp
-        ? "outbound traffic is NOT egressing through the AlgoIP proxy - it is " +
-          "bypassing it and using this host's own IP. Do NOT whitelist this " +
-          "IP; fix the proxy routing first."
-        : null;
-
-    const ok = response.ok && (!expectedIp || ipMatches);
-    return res.status(ok ? 200 : 502).json({
-      success: ok,
-      proxyConfigured: true,
-      routedIp: routedIp || null,
-      expectedIp,
-      ipMatches,
-      country: data.country || null,
-      city: data.city || null,
-      runtime: {
-        node: process.version,
-        undici: UNDICI_VERSION,
-        proxyHost: ALGOIP_HOST,
-        proxyPort: Number(ALGOIP_PORT)
-      },
-      warning: looksLikeHostingEgress,
-      message: !response.ok
-        ? "AlgoIP echo service unreachable."
-        : ok
-          ? "AlgoIP proxy routing is working and egress matches the expected static IP."
-          : expectedIp
-            ? "PROXY BYPASS DETECTED: routed IP does not match the expected AlgoIP static IP."
-            : "Traffic is flowing, but ALGOIP_EXPECTED_IP is not set - set it in Render so this check can verify egress."
-    });
-  } catch (error) {
-    const code = error?.cause?.code || error?.code || "NETWORK_ERROR";
-    console.error("[proxy] Proxy check error:", { code, message: error.message });
-    return res.status(502).json({
-      success: false,
-      proxyConfigured: true,
-      code,
-      message:
-        "Render cannot reach the AlgoIP proxy. Check the host, port, username, " +
-        "password, and AlgoIP service status."
-    });
-}
-});
-
-app.get("/kite/login", (req, res) => {
-  if (!KITE_API_KEY) {
-    return sendPage(res, "Kite Configuration Error", "KITE_API_KEY is missing.");
-  }
-
-  const loginUrl =
-    "https://kite.zerodha.com/connect/login?v=3&api_key=" +
-    encodeURIComponent(KITE_API_KEY);
-
-  return res.redirect(loginUrl);
-});
-
-/* Kite redirects here after a successful login. The request_token is
-   SINGLE USE and valid for only a few minutes, so this route must survive
-   replays, refreshes and double-fires gracefully. */
-app.get("/kite/callback", async (req, res, next) => {
-  const requestToken = String(req.query.request_token || "").trim();
-  const status = String(req.query.status || "");
-
-  if (status !== "success" || !requestToken) {
-    return sendPage(
-      res,
-      "Authentication Failed",
-      "Kite did not return a valid request token.",
-      false,
-      5
-    );
-  }
-  if (!KITE_API_KEY || !KITE_API_SECRET) {
-    return sendPage(
-      res,
-      "Configuration Error",
-      "KITE_API_KEY or KITE_API_SECRET is missing."
-    );
-  }
-
-  if (!db) {
-    return sendPage(
-      res,
-      "Database Error",
-      "DATABASE_URL is missing. The Kite token cannot be saved."
-    );
-  }
-
-  try {
-    /* Replay guard: if the stored session is still alive, a duplicate or
-       reused request_token would fail the exchange anyway - just redirect. */
-    const existing = await getStoredToken();
-    if (existing?.access_token && (await isSessionAlive(existing.access_token))) {
-      console.log(
-        "[kite] callback replay detected; existing session is still valid -> dashboard"
-      );
-return res.redirect(`${DASHBOARD_URL}?kite=connected`);
-    }
-
-    const body = new URLSearchParams({
-      api_key: KITE_API_KEY,
-      request_token: requestToken,
-      checksum: checksum(KITE_API_KEY, requestToken, KITE_API_SECRET)
-    });
-
-    const response = await kiteRequest("/session/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: body.toString()
-    });
-
-    if (response.networkError) {
-      console.error("[kite] callback network error:", {
-        code: response.code,
-        detail: response.detail
-      });
-      return sendPage(
-"Authentication Error",
-        `Kite session request failed (${response.code}). ${response.detail}. ` +
-          "Check the AlgoIP proxy protocol, host, port, username, and password in Render.",
-        false,
-        8
-      );
-    }
-
-    const result = response.json;
-    if (!response.ok || result?.status !== "success" || !result?.data?.access_token) {
-      const message = result?.message || response.text || "Kite token exchange failed.";
-      console.error("[kite] token exchange failed:", message);
-      return sendPage(
-        res,
-        "Kite Authentication Failed",
-        `${message} Request tokens are single-use and expire within minutes - ` +
-          "use the button below to log in again.",
-false,
-        5
-      );
-    }
-
-    await saveKiteToken(
-      result.data.access_token,
-      result.data.user_id,
-      normalizeLoginTime(result.data.login_time)
-    );
-    console.log(
-      `[kite] login OK (user ${result.data.user_id}); token saved and valid until ~` +
-        `${approximateTokenExpiry(result.data.login_time)}`
-    );
-    return res.redirect(`${DASHBOARD_URL}?kite=connected`);
-  } catch (error) {
-    const code = error?.cause?.code || error?.code || "SERVER_ERROR";
-const detail = error?.message || "Unexpected error during Kite login.";
-    console.error("[kite] callback error:", { code, detail });
-    return sendPage(
-      res,
-      "Authentication Error",
-      `Kite login failed (${code}). ${detail}`,
-      false,
-      8
-    );
-  }
-});
-
-app.get("/api/auth/status", async (req, res) => {
-  try {
-    const token = await getStoredToken();
-    const connected = Boolean(token?.access_token);
-    let alive = false;
-
-    if (connected) {
-/* Real liveness check (cached ~30s) so the dashboard learns about the
-         daily ~6 AM IST expiry without waiting for a failed trade call. */
-      alive = await isSessionAlive(token.access_token);
-      if (!alive) {
-        try {
-          await deleteKiteToken();
-        } catch (_) {
-          /* best effort */
-        }
-      }
-    }
-
-    res.json({
-      success: true,
-      connected: connected && alive,
-      alive,
-      userId: token?.user_id || null,
-      loginTime: token?.login_time || null,
-      approxTokenExpiry: approximateTokenExpiry(token?.login_time),
-      message:
-        connected && alive
-          ? null
-: connected
-            ? "Your Kite session expired (tokens expire around 6 AM IST). Log in again."
-            : "Not connected. Visit /kite/login to connect Kite.",
-      loginUrl: connected && alive ? null : "/kite/login"
-    });
-  }
-  catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
-
-app.get("/dashboard", async (req, res) => {
-  try {
-    const token = await getStoredToken();
-    if (!token?.access_token) return res.redirect("/kite/login");
-    return serveIndex(res);
-  } catch (error) {
-    return res.status(500).send(`Dashboard error: ${escapeHtml(error.message)}`);
-  }
-});
-
-app.get("/api/stocks/search", async (req, res) => {
-  try {
-    const query = String(req.query.q || "").trim().toUpperCase();
-    if (!query) return res.json({ success: true, results: [] });
-
-    const items = await getInstruments();
-
-    const results = items
-      .filter((item) => {
-        const symbol = item.symbol.toUpperCase();
-const name = item.name.toUpperCase();
-        return symbol.includes(query) || name.includes(query);
-      })
-      .slice(0, 20);
-
-    return res.json({ success: true, results });
-  } catch (error) {
-    if (error instanceof KiteTokenError) {
-      try {
-        await deleteKiteToken();
-      } catch (_) {
-        /* best effort */
-      }
-      return res.status(401).json({
-        success: false,
-        code: "KITE_SESSION_EXPIRED",
-        message: "Your Kite session expired. Log in again.",
-        loginUrl: "/kite/login"
-      });
-    }
-    console.error("Stock search error:", error);
-    return res.status(500).json({ success: false, message: error.message });
-}
-});
-
-app.get("/api/stocks/recommendation", async (req, res) => {
-  try {
-    const token = await getStoredToken();
-    if (!token?.access_token) {
-      return res.status(401).json({
-        success: false,
-        code: "KITE_SESSION_EXPIRED",
-        message: "Connect Kite first.",
-        loginUrl: "/kite/login"
-      });
-    }
-
-    const items = await getInstruments();
-    const candidates = items.filter(
-      (item) => item.symbol && !item.symbol.includes("-")
-    );
-
-    if (!candidates.length) {
-      return res.status(404).json({
-        success: false,
-        message: "No NSE instruments are available."
-      });
-    }
-
-    const selected = candidates[Math.floor(Math.random() * candidates.length)];
-    const score = 65 + Math.floor(Math.random() * 30);
-
-    return res.json({
-      success: true,
-      stock: {
-        symbol: selected.symbol,
-        name: selected.name || selected.symbol,
-        exchange: "NSE",
-        price: 0,
-        score,
-        risk: score >= 85 ? "Low" : score >= 75 ? "Medium" : "High",
-        reason: "Selected from the currently available NSE instrument list.",
-        instrumentToken: selected.instrumentToken
-}
-    });
-  }
-    catch (error) {
-    if (error instanceof KiteTokenError) {
-      try {
-        await deleteKiteToken();
-      } catch (_) {
-        /* best effort */
-      }
-      return res.status(401).json({
-        success: false,
-        code: "KITE_SESSION_EXPIRED",
-        message: "Your Kite session expired. Log in again.",
-        loginUrl: "/kite/login"
-      });
-    }
-    console.error("NSE recommendation error:", error);
-    return res.status(500).json({ success: false, message: error.message });
-  }
-});
-app.get("/api/market/quote", async (req, res) => {
-  try {
-    const symbol = String(req.query.symbol || "").trim().toUpperCase();
-    if (!symbol) {
-      return res.status(400).json({
-        success: false,
-        message: "Use ?symbol=RELIANCE"
-      });
-    }
-
-    const token = await getStoredToken();
-    if (!token?.access_token) {
-      return res.status(401).json({
-        success: false,
-        code: "KITE_SESSION_EXPIRED",
-        message: "Connect Kite first.",
-        loginUrl: "/kite/login"
-      });
-    }
-const instrument = `NSE:${symbol}`;
-    const response = await kiteRequest(
-      "/quote/ltp" + `?i=${encodeURIComponent(instrument)}`,
-      { headers: kiteAuthHeaders(token.access_token) }
-    );
-
-    if (!response.ok || response.json?.status !== "success") {
-      return handleKiteFailure(res, response, "Kite quote failed.");
-    }
-
-    const quote = response.json.data?.[instrument];
-    if (!quote) {
-      return res.status(404).json({
-        success: false,
-        message: `${instrument} was not found.`
-      });
-    }
-
-    return res.json({
-      success: true,
-exchange: "NSE",
-      symbol,
-      instrument,
-      last_price: quote.last_price,
-      source: "Kite Connect",
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error("Quote error:", error);
-    return res.status(500).json({ success: false, message: error.message });
-  }
-});
-
-app.post("/api/orders", async (req, res) => {
-  try {
-    if (!KITE_API_KEY) {
-      return res.status(500).json({
-        success: false,
-        message: "KITE_API_KEY is not configured."
-      });
-    }
-const token = await getStoredToken();
-    if (!token?.access_token) {
-      return res.status(401).json({
-        success: false,
-        code: "KITE_SESSION_EXPIRED",
-        message: "Connect Kite before placing an order.",
-        loginUrl: "/kite/login"
-      });
-    }
-
-    const {
-      exchange,
-      tradingsymbol,
-      transaction_type,
-      quantity,
-      order_type,
-      product,
-      validity,
-      price
-    } = req.body || {};
-
-    const normalizedQuantity = Number(quantity);
-    const normalizedPrice = Number(price ||
-0);
-    const allowedTransactions = new Set(["BUY", "SELL"]);
-    const allowedOrderTypes = new Set(["MARKET", "LIMIT"]);
-
-    if (
-      exchange !== "NSE" ||
-      !String(tradingsymbol || "").trim() ||
-      !allowedTransactions.has(transaction_type) ||
-      !Number.isInteger(normalizedQuantity) ||
-      normalizedQuantity <= 0 ||
-      !allowedOrderTypes.has(order_type) ||
-      (order_type === "LIMIT" && normalizedPrice <= 0)
-    ) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid order details."
-      });
-    }
-const orderBody = new URLSearchParams({
-      exchange: "NSE",
-      tradingsymbol: String(tradingsymbol).trim().toUpperCase(),
-      transaction_type,
-      quantity: String(normalizedQuantity),
-      order_type,
-      product: product === "MIS" ? "MIS" : "CNC",
-      validity: validity === "IOC" ? "IOC" : "DAY"
-    });
-
-    if (order_type === "LIMIT") {
-      orderBody.set("price", normalizedPrice.toString());
-    }
-
-    const response = await kiteRequest("/orders/regular", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        ...kiteAuthHeaders(token.access_token)
-      },
-      body: orderBody.toString()
-    });
-
-    const result = response.json;
-    if (!response.ok || result?.status !== "success") {
-      return handleKiteFailure(res, response, "Kite rejected the order.");
-    }
-
-    const orderId = result.data?.order_id || null;
-    if (!orderId) {
-      return res.status(502).json({
-        success: false,
-        message: "Kite accepted the request but returned no order ID."
-      });
-    }
-
-    return res.json({
-      success: true,
-      orderId,
-      status: "OPEN",
-message: "Order submitted to Kite."
-    });
-  }
-  catch (error) {
-    console.error("Order submission error:", error);
-    return res.status(500).json({ success: false, message: error.message });
-  }
-});
-
-app.get("/api/orders/:orderId/status", async (req, res) => {
-  try {
-    const token = await getStoredToken();
-    const orderId = String(req.params.orderId || "").trim();
-
-    if (!token?.access_token) {
-      return res.status(401).json({
-        success: false,
-        code: "KITE_SESSION_EXPIRED",
-        message: "Connect Kite before checking order status.",
-loginUrl: "/kite/login"
-      });
-    }
-
-    if (!orderId) {
-      return res.status(400).json({
-        success: false,
-        message: "Order ID is required."
-      });
-    }
-
-    const response = await kiteRequest(
-      `/orders/${encodeURIComponent(orderId)}`,
-      { headers: kiteAuthHeaders(token.access_token) }
-    );
-
-    if (!response.ok || response.json?.status !== "success") {
-      return handleKiteFailure(res, response, "Unable to read order status.");
-}
-
-    const orders = Array.isArray(response.json.data) ? response.json.data : [];
-    const latest = orders[orders.length - 1];
-    if (!latest) {
-      return res.status(404).json({
-        success: false,
-        message: "Order status was not found."
-      });
-    }
-
-    return res.json({
-      success: true,
-      orderId: latest.order_id || orderId,
-      status: latest.status || "UNKNOWN",
-      statusMessage: latest.status_message || "",
-      filledQuantity: Number(latest.filled_quantity || 0),
-      averagePrice: Number(latest.average_price || 0)
-    });
-  } catch (error) {
-    console.error("Order status error:", error);
-    return res.status(500).json({ success: false, message: error.message });
-  }
-});
-
-app.post("/api/auth/logout", async (req, res) => {
-  try {
-    const token = await getStoredToken();
-
-    /* Best-effort server-side invalidation so the token cannot be reused. */
-    if (token?.access_token && KITE_API_KEY) {
-      try {
-        await kiteRequest(
-          `/session/token?api_key=${encodeURIComponent(KITE_API_KEY)}` +
-            `&access_token=${encodeURIComponent(token.access_token)}`,
-          { method: "DELETE" }
-        );
-      } catch (_) {
-        /* ignore - local cleanup below is what matters */
-      }
-    }
-
-    await deleteKiteToken();
-    instrumentsCache = { items: [], fetchedAt: 0, promise: null };
-    sessionCheckCache = { key: null, alive: false, checkedAt: 0 };
-
-    return res.json({ success: true, message: "Logged out." });
-  } catch (error) {
-    return res.status(500).json({ success: false, message: error.message });
-  }
-});
-
-app.use((req, res) => {
-  res.status(404).json({
-    success: false,
-    message: `Route ${req.method} ${req.originalUrl} was not found.`
-  });
-});
-
-/* JSON body parse errors and anything else that throws inside a route. */
-app.use((error, req, res, next) => {
-  if (error?.type === "entity.parse.failed") {
-    return res.status(400).json({ success: false, message: "Invalid JSON body." });
-  }
-  console.error("[express] Route error:", error);
-  return res
-    .status(error?.status || 500)
-    .json({ success: false, message: error?.message || "Internal server error." });
-});
-
-/* ------------------------------------------------------------------ */
-/* 9. Background helpers                                               */
-/* ------------------------------------------------------------------ */
-
-function startSessionSweeper() {
-  const timer = setInterval(async () => {
-    try {
-      const token = await getStoredToken(true);
-      if (!token?.access_token) return;
-      const alive = await isSessionAlive(token.access_token, { force: true });
-      if (!alive) {
-        console.log(
-          "[kite] session sweeper: stored token is no longer valid; clearing it"
-        );
-        await deleteKiteToken();
-}
-    } catch (error) {
-      console.error("[kite] session sweeper error:", error.message);
-    }
-  }, SESSION_SWEEP_INTERVAL_MS);
-  timer.unref?.();
-  console.log(
-    `[kite] session sweeper active (every ${Math.round(
-      SESSION_SWEEP_INTERVAL_MS / 60000
-    )} min; set SESSION_SWEEP_INTERVAL_MS to tune)`
-  );
-}
-
-function startKeepAlive() {
-  if (!KEEP_ALIVE_ENABLED) return;
-  if (!BASE_URL || /localhost|127\.0\.0\.1/.test(BASE_URL)) return;
-
-  const ping = async () => {
-    try {
-      await proxiedFetch(`${BASE_URL}/health`, {
-        signal: AbortSignal.timeout(10000) });
-    } catch (_) {
-      /* Instance may be asleep or offline - ignore. */
-    }
+async function saveToken(session) {
+  const record = {
+    id: 1,
+    user_id: session.user_id || null,
+    user_name: session.user_name || null,
+    access_token: session.access_token,
+    public_token: session.public_token || null,
+    login_time: normalizeIstLoginTime(session.login_time),
   };
 
-  const timer = setInterval(ping, KEEP_ALIVE_INTERVAL_MS);
-  timer.unref?.();
-  console.log(
-    `[keep-alive] pinging ${BASE_URL}/health every ${Math.round(
-      KEEP_ALIVE_INTERVAL_MS / 60000
-    )} min (set KEEP_ALIVE=false to disable; an external cron such as ` +
-      "UptimeRobot is the most reliable option on the Render free tier)"
-  );
-}
-/* ------------------------------------------------------------------ */
-/* 10. Startup & shutdown                                              */
-/* ------------------------------------------------------------------ */
-
-let server = null;
-
-function logStartupBanner() {
-  console.log("==============================================");
-  console.log(" Kite backend starting");
-  console.log(`  port:          ${PORT}`);
-  console.log(`  base URL:      ${BASE_URL}`);
-  console.log(`  callback URL:  ${CALLBACK_URL}`);
-  console.log(`  dashboard URL: ${DASHBOARD_URL}`);
-  console.log(`  kite api key:  ${KITE_API_KEY ? KITE_API_KEY.slice(0, 4) + "****" : "MISSING"}`);
-  console.log(`  kite secret:   ${KITE_API_SECRET ? "configured" : "MISSING"}`);
-  console.log(`  database:      ${db ? "configured" : "MISSING"}`);
-  console.log(
-    `  proxy:         ${proxyUrl ? `${ALGOIP_HOST}:${ALGOIP_PORT}` : proxy.error ? "ERROR - " + proxy.error : "not configured"}`
-  );
-  console.log(`  proxy agent:   ${proxyAgent ? "explicitly bound to all outbound requests" : "NOT active"}`);
-  console.log(`  expected IP:   ${ALGOIP_EXPECTED_IP || "(not set - /api/proxy-check cannot verify egress)"}`);
-  console.log(`  runtime:       node ${process.version}, undici ${UNDICI_VERSION}`);
-  console.log(`  kite timeout:  ${KITE_TIMEOUT_MS}ms (retries: ${KITE_MAX_RETRIES})`);
-  console.log("==============================================");
-}
-
-function shutdown(signal) {
-  console.log(`\n[server] ${signal} received - shutting down gracefully.`);
-  const forceExit = setTimeout(() => process.exit(signal === "uncaughtException" ? 1 : 0), 8000);
-forceExit.unref();
-
-  if (server) {
-    server.close(async () => {
-      try {
-        if (db) await db.end();
-      } catch (_) {
-        /* ignore */
-      }
-      process.exit(0);
-    });
-  } else {
-    process.exit(0);
-  }
-}
-
-process.on("SIGTERM", () => shutdown("SIGTERM"));
-process.on("SIGINT", () => shutdown("SIGINT"));
-process.on("unhandledRejection", (reason) => {
-  console.error("[process] Unhandled rejection:", reason?.message || reason);
-});
-process.on("uncaughtException", (error) => {
-  console.error("[process] Uncaught exception:", error);
-  shutdown("uncaughtException");
-});
-
-async function startServer() {
-  logStartupBanner();
-
-  try {
-    await initializeDatabase();
-  } catch (error) {
-    console.error("[db] Database initialisation failed after retries:", error.message);
-    console.error("[db] Render will restart the service; verify DATABASE_URL.");
-    process.exit(1);
+  if (pool) {
+    await pool.query(
+      `INSERT INTO kite_tokens (id, user_id, user_name, access_token, public_token, login_time, updated_at)
+       VALUES (1, $1, $2, $3, $4, $5, NOW())
+       ON CONFLICT (id) DO UPDATE SET
+         user_id = EXCLUDED.user_id,
+         user_name = EXCLUDED.user_name,
+         access_token = EXCLUDED.access_token,
+         public_token = EXCLUDED.public_token,
+         login_time = EXCLUDED.login_time,
+         updated_at = NOW()`,
+      [record.user_id, record.user_name, record.access_token, record.public_token, record.login_time]
+    );
   }
 
-  server = app.listen(PORT, "0.0.0.0", () => {
-    /* Behind Render's proxy the default 5s keep-alive window causes
-       ECONNRESETs for clients; keep sockets
-open longer than the LB. */
-    server.keepAliveTimeout = 65000;
-    server.headersTimeout = 66000;
+  tokenCache = record;
+  log('INFO', `Token stored for user ${record.user_id}`);
+  return record;
+}
 
-    console.log(`[server] running on port ${PORT}`);
-    console.log(`[server] callback URL: ${CALLBACK_URL}`);
-    console.log(`[server] dashboard URL: ${DASHBOARD_URL}`);
+async function loadToken() {
+  if (tokenCache) return tokenCache;
+  if (!pool) return null;
+  const { rows } = await pool.query('SELECT * FROM kite_tokens WHERE id = 1');
+  if (!rows.length) return null;
+  tokenCache = rows[0];
+  return tokenCache;
+}
 
-    startSessionSweeper();
-    startKeepAlive();
+async function clearToken(reason) {
+  log('WARN', `Clearing Kite session: ${reason}`);
+  tokenCache = null;
+  if (pool) await pool.query('DELETE FROM kite_tokens WHERE id = 1');
+}
+
+/** Throws KITE_SESSION_EXPIRED if there is no usable token. */
+async function requireToken() {
+  const row = await loadToken();
+  if (!row || !row.access_token) {
+    const err = new Error('No active Kite session. Please log in.');
+    err.status = 401;
+    err.code = 'KITE_SESSION_EXPIRED';
+    err.loginUrl = loginUrl();
+    throw err;
+  }
+  return row.access_token;
+}
+
+// ---------------------------------------------------------------------------
+// Session lifetime helpers — next 06:00 IST boundary
+// ---------------------------------------------------------------------------
+
+function nextIstResetInstant(from = new Date()) {
+  const ist = new Date(from.getTime() + IST_OFFSET_MS);
+  const boundary = new Date(
+    Date.UTC(ist.getUTCFullYear(), ist.getUTCMonth(), ist.getUTCDate(), SESSION_RESET_HOUR_IST, 0, 0)
+  );
+  if (boundary.getTime() <= ist.getTime()) boundary.setUTCDate(boundary.getUTCDate() + 1);
+  return new Date(boundary.getTime() - IST_OFFSET_MS);
+}
+
+// ---------------------------------------------------------------------------
+// PHASE 1 FIX #1 — sendPage signature
+//
+// Was called inconsistently as sendPage(res, html) and sendPage(res, code, html)
+// across the /kite/callback error branches, so the status code was rendered as
+// the page body. One signature, everywhere:
+//     sendPage(res, statusCode, title, message, redirectTo?)
+// ---------------------------------------------------------------------------
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])
+  );
+}
+
+function sendPage(res, statusCode, title, message, redirectTo) {
+  const code = Number.isInteger(statusCode) ? statusCode : 500;
+  const ok = code < 400;
+  const redirectMeta = redirectTo
+    ? `<meta http-equiv="refresh" content="2;url=${escapeHtml(redirectTo)}">`
+    : '';
+
+  res.status(code).type('html').send(`<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${escapeHtml(title)}</title>${redirectMeta}
+<style>
+  body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0f172a;
+       color:#e2e8f0;font:15px/1.6 ui-sans-serif,system-ui,-apple-system,sans-serif}
+  .card{max-width:520px;padding:36px 40px;border:1px solid #1e293b;border-radius:14px;
+        background:#111c33;box-shadow:0 24px 60px rgba(0,0,0,.45)}
+  h1{margin:0 0 10px;font-size:19px;letter-spacing:-.01em;color:${ok ? '#4ade80' : '#f87171'}}
+  p{margin:0;color:#94a3b8}
+  code{color:#7dd3fc}
+  a{display:inline-block;margin-top:22px;color:#38bdf8;text-decoration:none;font-weight:600}
+</style></head>
+<body><div class="card">
+  <h1>${escapeHtml(title)}</h1>
+  <p>${escapeHtml(message)}</p>
+  <a href="${escapeHtml(redirectTo || '/dashboard')}">Continue &rarr;</a>
+</div></body></html>`);
+}
+
+// ---------------------------------------------------------------------------
+// Express app
+// ---------------------------------------------------------------------------
+
+const app = express();
+app.disable('x-powered-by');
+app.use(express.json({ limit: '256kb' }));
+app.use(express.urlencoded({ extended: true }));
+
+const asyncRoute = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+
+// --- Health & proxy verification -------------------------------------------
+
+app.get('/api/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    uptimeSeconds: Math.round(process.uptime()),
+    proxyConfigured: Boolean(ALGOIP_HOST && ALGOIP_PORT),
+    dbConfigured: Boolean(pool),
+    kiteConfigured: Boolean(KITE_API_KEY && KITE_API_SECRET),
   });
+});
+
+/**
+ * GET /api/proxy-check
+ * Confirms outbound traffic egresses from the whitelisted AlgoIP address.
+ */
+app.get('/api/proxy-check', asyncRoute(async (req, res) => {
+  const started = Date.now();
+  try {
+    const r = await request('https://api.ipify.org?format=json', { dispatcher, method: 'GET' });
+    const data = JSON.parse(await r.body.text());
+    const egressIp = data.ip;
+    const matches = ALGOIP_EXPECTED_IP ? egressIp === ALGOIP_EXPECTED_IP : null;
+
+    res.status(matches === false ? 409 : 200).json({
+      egressIp,
+      expectedIp: ALGOIP_EXPECTED_IP || null,
+      matches,
+      proxyConfigured: Boolean(ALGOIP_HOST && ALGOIP_PORT),
+      proxyHost: ALGOIP_HOST ? `${ALGOIP_HOST}:${ALGOIP_PORT}` : null,
+      latencyMs: Date.now() - started,
+    });
+  } catch (err) {
+    res.status(502).json({
+      code: 'PROXY_UNREACHABLE',
+      message: err.message,
+      proxyHost: ALGOIP_HOST ? `${ALGOIP_HOST}:${ALGOIP_PORT}` : null,
+      latencyMs: Date.now() - started,
+    });
+  }
+}));
+
+// --- OAuth flow -------------------------------------------------------------
+
+app.get('/kite/login', (req, res) => {
+  if (!KITE_API_KEY) {
+    return sendPage(res, 500, 'Configuration missing', 'KITE_API_KEY is not set on this server.', '/dashboard');
+  }
+  res.redirect(loginUrl());
+});
+
+/**
+ * GET /kite/callback?request_token=...&status=success
+ * Exchanges the request token through the AlgoIP proxy and persists the session.
+ */
+app.get('/kite/callback', asyncRoute(async (req, res) => {
+  const { request_token: requestToken, status } = req.query;
+
+  if (status && status !== 'success') {
+    return sendPage(res, 400, 'Login cancelled',
+      'Zerodha reported a non-success status for this login attempt. Please try again.', '/dashboard?kite=failed');
+  }
+  if (!requestToken) {
+    return sendPage(res, 400, 'Missing request token',
+      'The callback did not include a request_token parameter.', '/dashboard?kite=failed');
+  }
+  if (!KITE_API_KEY || !KITE_API_SECRET) {
+    return sendPage(res, 500, 'Configuration missing',
+      'KITE_API_KEY / KITE_API_SECRET are not configured on this server.', '/dashboard?kite=failed');
+  }
+
+  const checksum = crypto
+    .createHash('sha256')
+    .update(KITE_API_KEY + requestToken + KITE_API_SECRET)
+    .digest('hex');
+
+  let session;
+  try {
+    const raw = await kiteRequest('POST', '/session/token', {
+      form: { api_key: KITE_API_KEY, request_token: requestToken, checksum },
+    });
+    session = unwrapKite(raw);
+  } catch (err) {
+    log('ERROR', 'Token exchange failed', err.message);
+    const code = err.status === 401 ? 401 : err.code === 'UPSTREAM_UNREACHABLE' ? 502 : (err.status || 502);
+    return sendPage(res, code, 'Token exchange failed', err.message, '/dashboard?kite=failed');
+  }
+
+  await saveToken(session);
+  return res.redirect('/dashboard?kite=connected');
+}));
+
+/** GET /api/session — session state + remaining lifetime for the health pill. */
+app.get('/api/session', asyncRoute(async (req, res) => {
+  const row = await loadToken();
+  const expiresAt = nextIstResetInstant();
+  if (!row) {
+    return res.json({
+      connected: false,
+      userId: null,
+      userName: null,
+      loginTime: null,
+      expiresAt: expiresAt.toISOString(),
+      secondsRemaining: 0,
+      loginUrl: loginUrl(),
+    });
+  }
+  return res.json({
+    connected: true,
+    userId: row.user_id,
+    userName: row.user_name,
+    loginTime: new Date(row.login_time).toISOString(),
+    expiresAt: expiresAt.toISOString(),
+    secondsRemaining: Math.max(0, Math.floor((expiresAt.getTime() - Date.now()) / 1000)),
+    loginUrl: loginUrl(),
+  });
+}));
+
+app.post('/api/session/logout', asyncRoute(async (req, res) => {
+  await clearToken('manual logout');
+  res.json({ connected: false });
+}));
+
+// --- Instrument master cache -----------------------------------------------
+
+const INSTRUMENT_TTL_MS = 6 * 60 * 60 * 1000; // refresh twice a day
+let instrumentCache = { at: 0, rows: [] };
+let instrumentInFlight = null; // in-flight dedup: concurrent callers share one download
+
+function parseInstrumentCsv(csv) {
+  const lines = csv.split('\n');
+  const header = lines[0].split(',').map((h) => h.trim());
+  const idx = {
+    token: header.indexOf('instrument_token'),
+    symbol: header.indexOf('tradingsymbol'),
+    name: header.indexOf('name'),
+    exchange: header.indexOf('exchange'),
+    segment: header.indexOf('segment'),
+    type: header.indexOf('instrument_type'),
+  };
+  const out = [];
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line) continue;
+    const c = line.split(',');
+    if (c[idx.exchange] !== 'NSE' || c[idx.type] !== 'EQ') continue;
+    out.push({
+      instrumentToken: Number(c[idx.token]),
+      tradingsymbol: c[idx.symbol],
+      name: (c[idx.name] || '').replace(/^"|"$/g, ''),
+      exchange: c[idx.exchange],
+      segment: c[idx.segment],
+    });
+  }
+  return out;
 }
 
-startServer();  
+async function getInstruments() {
+  if (Date.now() - instrumentCache.at < INSTRUMENT_TTL_MS && instrumentCache.rows.length) {
+    return instrumentCache.rows;
+  }
+  if (instrumentInFlight) return instrumentInFlight;
+
+  instrumentInFlight = (async () => {
+    try {
+      const r = await request(`${KITE_BASE}/instruments/NSE`, { dispatcher, method: 'GET' });
+      if (r.statusCode !== 200) throw new Error(`instrument dump returned ${r.statusCode}`);
+      const rows = parseInstrumentCsv(await r.body.text());
+      instrumentCache = { at: Date.now(), rows };
+      log('INFO', `Instrument cache loaded: ${rows.length} NSE equities`);
+      return rows;
+    } finally {
+      instrumentInFlight = null;
+    }
+  })();
+
+  return instrumentInFlight;
+}
+
+app.get('/api/stocks/search', asyncRoute(async (req, res) => {
+  const q = String(req.query.q || req.query.query || '').trim().toUpperCase();
+  const limit = Math.min(Number(req.query.limit) || 20, 50);
+  if (q.length < 1) return res.json({ query: q, count: 0, results: [] });
+
+  const rows = await getInstruments();
+  const starts = [];
+  const contains = [];
+  for (const row of rows) {
+    const sym = row.tradingsymbol;
+    if (sym.startsWith(q)) starts.push(row);
+    else if (sym.includes(q) || row.name.toUpperCase().includes(q)) contains.push(row);
+    if (starts.length >= limit) break;
+  }
+  const results = starts.concat(contains).slice(0, limit);
+  res.json({ query: q, count: results.length, results });
+}));
+
+// --- Market data ------------------------------------------------------------
+
+app.get('/api/market/quote', asyncRoute(async (req, res) => {
+  const symbol = String(req.query.symbol || '').trim().toUpperCase();
+  if (!symbol) {
+    return res.status(400).json({ code: 'INVALID_INPUT', message: 'symbol query parameter is required' });
+  }
+  const exchange = String(req.query.exchange || 'NSE').toUpperCase();
+  const instrument = `${exchange}:${symbol}`;
+
+  const accessToken = await requireToken();
+  const raw = await kiteRequest('GET', '/quote/ltp', { query: { i: instrument }, accessToken });
+  const data = unwrapKite(raw);
+  const entry = data[instrument];
+  if (!entry) {
+    return res.status(404).json({ code: 'SYMBOL_NOT_FOUND', message: `No quote for ${instrument}` });
+  }
+  res.json({
+    symbol,
+    exchange,
+    instrumentToken: entry.instrument_token,
+    lastPrice: entry.last_price,
+    fetchedAt: new Date().toISOString(),
+  });
+}));
+
+// --- Orders -----------------------------------------------------------------
+
+const PRODUCTS = new Set(['MIS', 'CNC', 'NRML']);
+const ORDER_TYPES = new Set(['LIMIT', 'MARKET', 'SL', 'SL-M']);
+const VALIDITIES = new Set(['DAY', 'IOC']);
+const SIDES = new Set(['BUY', 'SELL']);
+
+function validateOrder(b) {
+  const errors = [];
+  const symbol = String(b.symbol || b.tradingsymbol || '').trim().toUpperCase();
+  const exchange = String(b.exchange || 'NSE').toUpperCase();
+  const side = String(b.side || b.transaction_type || '').toUpperCase();
+  const product = String(b.product || 'MIS').toUpperCase();
+  const orderType = String(b.orderType || b.order_type || 'MARKET').toUpperCase();
+  const validity = String(b.validity || 'DAY').toUpperCase();
+  const quantity = Number(b.quantity);
+  const price = b.price === undefined || b.price === null || b.price === '' ? null : Number(b.price);
+
+  if (!symbol) errors.push('symbol is required');
+  if (!SIDES.has(side)) errors.push('side must be BUY or SELL');
+  if (!PRODUCTS.has(product)) errors.push('product must be one of MIS, CNC, NRML');
+  if (!ORDER_TYPES.has(orderType)) errors.push('orderType must be one of LIMIT, MARKET, SL, SL-M');
+  if (!VALIDITIES.has(validity)) errors.push('validity must be DAY or IOC');
+  if (!Number.isInteger(quantity) || quantity <= 0) errors.push('quantity must be a positive integer');
+  if (orderType === 'LIMIT' && (price === null || !(price > 0))) errors.push('price is required for a LIMIT order');
+  if (orderType === 'MARKET' && price !== null) errors.push('price must be omitted for a MARKET order');
+
+  return { errors, order: { symbol, exchange, side, product, orderType, validity, quantity, price } };
+}
+
+app.post('/api/orders', asyncRoute(async (req, res) => {
+  const { errors, order } = validateOrder(req.body || {});
+  if (errors.length) {
+    return res.status(400).json({ code: 'INVALID_ORDER', message: 'Order validation failed', errors });
+  }
+
+  const accessToken = await requireToken();
+  const raw = await kiteRequest('POST', '/orders/regular', {
+    accessToken,
+    form: {
+      tradingsymbol: order.symbol,
+      exchange: order.exchange,
+      transaction_type: order.side,
+      order_type: order.orderType,
+      quantity: order.quantity,
+      product: order.product,
+      validity: order.validity,
+      price: order.orderType === 'LIMIT' ? order.price : undefined,
+    },
+  });
+  const data = unwrapKite(raw);
+
+  log('INFO', `Order placed ${order.side} ${order.quantity} ${order.symbol} -> ${data.order_id}`);
+  res.status(201).json({ orderId: data.order_id, ...order, submittedAt: new Date().toISOString() });
+}));
+
+app.get('/api/orders/:orderId/status', asyncRoute(async (req, res) => {
+  const accessToken = await requireToken();
+  const raw = await kiteRequest('GET', `/orders/${encodeURIComponent(req.params.orderId)}`, { accessToken });
+  const history = unwrapKite(raw);
+  if (!Array.isArray(history) || !history.length) {
+    return res.status(404).json({ code: 'ORDER_NOT_FOUND', message: 'No history for this order id' });
+  }
+  const latest = history[history.length - 1];
+  res.json({
+    orderId: latest.order_id,
+    status: latest.status,
+    statusMessage: latest.status_message,
+    symbol: latest.tradingsymbol,
+    side: latest.transaction_type,
+    quantity: latest.quantity,
+    filledQuantity: latest.filled_quantity,
+    pendingQuantity: latest.pending_quantity,
+    averagePrice: latest.average_price,
+    price: latest.price,
+    orderTimestamp: latest.order_timestamp,
+    history,
+  });
+}));
+
+app.get('/api/orders', asyncRoute(async (req, res) => {
+  const accessToken = await requireToken();
+  const data = unwrapKite(await kiteRequest('GET', '/orders', { accessToken }));
+  res.json({
+    count: data.length,
+    orders: data.map((o) => ({
+      orderId: o.order_id,
+      status: o.status,
+      symbol: o.tradingsymbol,
+      side: o.transaction_type,
+      quantity: o.quantity,
+      filledQuantity: o.filled_quantity,
+      averagePrice: o.average_price,
+      orderTimestamp: o.order_timestamp,
+    })),
+  });
+}));
+
+// --- Static frontend --------------------------------------------------------
+
+const CLIENT_DIR = path.join(__dirname, 'client', 'dist');
+app.use(express.static(CLIENT_DIR));
+app.get(/^\/(?!api\/|kite\/).*/, (req, res) => {
+  res.sendFile(path.join(CLIENT_DIR, 'index.html'), (err) => {
+    if (err) res.status(404).json({ code: 'NOT_FOUND', message: 'Route not found' });
+  });
+});
+
+// --- Central error handler --------------------------------------------------
+
+app.use((err, req, res, _next) => {
+  const status = err.status || (err.code === 'UPSTREAM_UNREACHABLE' ? 502 : 500);
+  if (status >= 500) log('ERROR', `${req.method} ${req.path} -> ${status}: ${err.message}`);
+
+  const payload = { code: err.code || 'INTERNAL_ERROR', message: err.message || 'Unexpected error' };
+  if (err.loginUrl) payload.loginUrl = err.loginUrl;
+  res.status(status).json(payload);
+});
+
+// ---------------------------------------------------------------------------
+// Regulatory session sweeper — probes /user/profile every 15 minutes
+// ---------------------------------------------------------------------------
+
+let sweepTimer = null;
+
+async function sweepSession() {
+  try {
+    const row = await loadToken();
+    if (!row || !row.access_token) return;
+
+    // Fast path: the token predates the most recent 06:00 IST boundary.
+    const lastReset = new Date(nextIstResetInstant().getTime() - 24 * 60 * 60 * 1000);
+    if (new Date(row.login_time).getTime() < lastReset.getTime()) {
+      await clearToken('login_time precedes the last 06:00 IST reset');
+      return;
+    }
+
+    const raw = await kiteRequest('GET', '/user/profile', { accessToken: row.access_token, retries: 1 });
+    if (raw.body && raw.body.error_type === 'TokenException') {
+      await clearToken('Kite returned TokenException on /user/profile');
+      return;
+    }
+    if (raw.status >= 200 && raw.status < 300) log('INFO', 'Session sweep: token healthy');
+  } catch (err) {
+    // A network blip must never nuke a valid session.
+    log('WARN', `Session sweep skipped: ${err.message}`);
+  }
+}
+
+function startSweeper() {
+  if (sweepTimer) clearInterval(sweepTimer);
+  sweepTimer = setInterval(sweepSession, SWEEP_INTERVAL_MS);
+  sweepTimer.unref();
+  setTimeout(sweepSession, 10000).unref?.();
+  log('INFO', `Session sweeper started (every ${SWEEP_INTERVAL_MS / 60000} min)`);
+}
+
+// ---------------------------------------------------------------------------
+// Boot
+// ---------------------------------------------------------------------------
+
+async function main() {
+  try {
+    await initDb();
+    await loadToken();
+  } catch (err) {
+    log('ERROR', `Database init failed: ${err.message}`);
+  }
+
+  startSweeper();
+
+  const server = app.listen(PORT, '0.0.0.0', () => {
+    log('INFO', `Server listening on :${PORT}`);
+    log('INFO', `AlgoIP egress: ${ALGOIP_HOST ? `${ALGOIP_HOST}:${ALGOIP_PORT}` : 'DIRECT (not configured)'}`);
+    log('INFO', `Expected whitelisted IP: ${ALGOIP_EXPECTED_IP || '(unset)'}`);
+  });
+
+  const shutdown = async (signal) => {
+    log('INFO', `${signal} received, shutting down`);
+    if (sweepTimer) clearInterval(sweepTimer);
+    server.close();
+    try { await dispatcher.close(); } catch (_) { /* noop */ }
+    if (pool) await pool.end().catch(() => {});
+    process.exit(0);
+  };
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
+}
+
+process.on('unhandledRejection', (r) => log('ERROR', 'Unhandled rejection', r));
+
+main();
+
+module.exports = app;
