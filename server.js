@@ -67,8 +67,8 @@ function log(level, msg, extra) {
 // ---------------------------------------------------------------------------
 
 const DISPATCHER_OPTS = {
-  keepAliveTimeout: 120000,     // drop idle sockets after 10s (proxy closes ~15-30s)
-  keepAliveMaxTimeout: 150000,  // hard ceiling regardless of server hints
+  keepAliveTimeout: 10000,     // drop idle sockets after 10s (proxy closes ~15-30s)
+  keepAliveMaxTimeout: 15000,  // hard ceiling regardless of server hints
   pipelining: 0,               // one in-flight request per socket, no pipelining
   connections: 8,
   connectTimeout: 8000,
