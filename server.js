@@ -30,17 +30,6 @@ const KITE_API_SECRET = process.env.KITE_API_SECRET || '';
 const KITE_BASE = 'https://api.kite.trade';
 const KITE_LOGIN_BASE = 'https://kite.zerodha.com/connect/login';
 
-const ALGOIP_HOST = process.env.ALGOIP_HOST || '';
-const ALGOIP_PORT = process.env.ALGOIP_PORT || '';
-const ALGOIP_USER = process.env.ALGOIP_USER || '';
-const ALGOIP_PASSWORD = process.env.ALGOIP_PASSWORD || '';
-const ALGOIP_EXPECTED_IP = process.env.ALGOIP_EXPECTED_IP || '';
-// Optional override: "http" or "https". If unset we infer from the port —
-// 443/8443 imply the CONNECT hop itself is TLS-wrapped.
-const ALGOIP_PROTOCOL = (process.env.ALGOIP_PROTOCOL || '').replace(/[:/]/g, '').toLowerCase();
-
-const DATABASE_URL = process.env.DATABASE_URL || '';
-
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000; // UTC+05:30, India has no DST
 const SESSION_RESET_HOUR_IST = 6;           // regulatory daily invalidation ~06:00 IST
 const SWEEP_INTERVAL_MS = 15 * 60 * 1000;   // profile probe every 15 minutes
