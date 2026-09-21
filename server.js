@@ -6,13 +6,13 @@ const express = require("express");
 const { Pool } = require("pg");
 
 const app = express();
-const PORT = Number(process.env.PORT || 10000);
-const KITE_API_KEY = process.env.KITE_API_KEY || "";
-const KITE_API_SECRET = process.env.KITE_API_SECRET || "";
-const BASE_URL = process.env.BASE_URL || "https://rreinvest.duckdns.org";
+const PORT = Number(process.env.PORT ||10000);
+const KITE_API_KEY = process.env.KITE_API_KEY||"";
+const KITE_API_SECRET = process.env.KITE_API_SECRET||"";
+const BASE_URL = process.env.BASE_URL|| "https://rreinvest.duckdns.org";
 const CALLBACK_URL = process.env.KITE_REDIRECT_URL || `${BASE_URL}/kite/callback`;
 const DASHBOARD_URL = process.env.DASHBOARD_URL || `${BASE_URL}/dashboard`;
-const DATABASE_URL = process.env.DATABASE_URL || "";
+const DATABASE_URL = process.env.DATABASE_URL ||"";
 
 let db = null;
 let cachedInstruments = [];
