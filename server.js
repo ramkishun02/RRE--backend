@@ -1,5 +1,6 @@
 "use strict";
-
+cd /root/RRE--backend
+sed -i '1i require("dotenv").config();' server.js
 const path = require("path");
 const crypto = require("crypto");
 const express = require("express");
