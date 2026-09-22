@@ -282,17 +282,21 @@ app.get("/health", async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 });
-
 app.get("/kite/login", (req, res) => {
   if (!KITE_API_KEY) {
     return sendPage(res, "Kite Configuration Error", "KITE_API_KEY is missing.");
   }
 
-  const loginUrl =
-    "https://kite.zerodha.com/connect/login?v=3&api_key=" +
-    encodeURIComponent(KITE_API_KEY);
+  const key = String(KITE_API_KEY).trim();
 
-  return res.redirect(loginUrl);
+  return res.json({
+    success: true,
+    kiteConfigured: true,
+    apiKeyLength: key.length,
+    apiKeyStarts: key.slice(0, 4),
+    apiKeyEnds: key.slice(-2),
+    hasLeadingOrTrailingSpace: key !== KITE_API_KEY
+  });
 });
 
 app.get("/kite/callback", async (req, res) => {
