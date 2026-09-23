@@ -6,7 +6,6 @@ const path = require("path");
 const crypto = require("crypto");
 const express = require("express");
 const { Pool } = require("pg");
-
 const app = express();
 const PORT = Number(process.env.PORT || 10000);
 const KITE_API_KEY = process.env.KITE_API_KEY || "";
