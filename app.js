@@ -538,12 +538,23 @@ function renderAI() {
         </div>
       </div>
 
-      <div class="preview-box">
-        ${previewRow("Selected stock", `${state.selectedStock.symbol} - ${state.selectedStock.name}`)}
-        ${previewRow("Exchange", state.selectedStock.exchange)}
-        ${previewRow("Price", formatMoney(state.selectedStock.price))}
-        ${previewRow("Selection source", state.selectedStock.symbol === recommendation.symbol ? "AI recommendation" : "User selection")}
-      </div>
+<div class="preview-box">
+  ${previewRow("Selected stock", `${state.selectedStock.symbol} - ${state.selectedStock.name}`)}
+  ${previewRow("Exchange", state.selectedStock.exchange)}
+  ${previewRow("Price", formatMoney(state.selectedStock.price))}
+  ${previewRow("Risk", state.selectedStock.risk || "—")}
+  ${previewRow("AI confidence", `${state.selectedStock.score || 0}%`)}
+  ${previewRow(
+    "Estimated quantity",
+    Math.max(1, Math.floor(state.amount / Number(state.selectedStock.price || 1)))
+  )}
+  ${previewRow(
+    "Selection source",
+    state.selectedStock.symbol === recommendation.symbol
+      ? "AI recommendation"
+      : "User selection"
+  )}
+</div>
     </div>
   `;
 }
