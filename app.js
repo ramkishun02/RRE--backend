@@ -284,7 +284,7 @@ function renderHome() {
   return `
     <div class="page-heading">
       <div>
-        <h2>Good morning, Vibha👋</h2>
+        <h2>Good morning, User👋</h2>
         <p>Control your investment strategy from one place.</p>
       </div>
 
