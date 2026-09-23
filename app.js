@@ -537,7 +537,7 @@ function renderAI() {
           <p>This is the stock that will be used in the order preview.</p>
         </div>
       </div>
-
+      
 <div class="preview-box">
   ${previewRow("Selected stock", `${state.selectedStock.symbol} - ${state.selectedStock.name}`)}
   ${previewRow("Exchange", state.selectedStock.exchange)}
@@ -555,6 +555,8 @@ function renderAI() {
       : "User selection"
   )}
 </div>
+
+
     </div>
   `;
 }
