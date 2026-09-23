@@ -1,5 +1,4 @@
 "use strict";
-
 const state = {
   activePage: "home",
   mode: "live",
