@@ -559,8 +559,10 @@ app.post("/api/orders", async (req, res) => {
       order_type,
       product,
       validity,
-      price
-    } = req.body || {};
+      price,
+market_protection
+} = req.body || {};
+    
 
     const normalizedQuantity = Number(quantity);
     const normalizedPrice = Number(price || 0);
@@ -596,6 +598,15 @@ app.post("/api/orders", async (req, res) => {
       orderBody.set("price", normalizedPrice.toString());
     }
 
+    if (order_type === "MARKET") {
+  orderBody.set(
+    "market_protection",
+    String(Number.isFinite(Number(market_protection)) ? Number(market_protection) : 2)
+  );
+    }
+   String(Number.isFinite(Number(market_protection)) ? Number(market_protection) : 2)
+  );
+  }
     const response = await fetch("https://api.kite.trade/orders/regular", {
       method: "POST",
       headers: {
