@@ -488,6 +488,9 @@ return res.json({
   }
 });
 
+    }
+});  
+
 app.get("/api/market/quote", async (req, res) => {
   try {
     const symbol = String(req.query.symbol || "").trim().toUpperCase();
