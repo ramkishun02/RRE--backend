@@ -420,7 +420,7 @@ app.get("/api/stocks/search", async (req, res) => {
   }
 });
 
-app.get("/api/stocks/recommendation", async (req, res) => {
+/*app.get("/api/stocks/recommendation", async (req, res) => {
   try {
     const token = await getKiteToken();
     if (!token?.access_token) {
@@ -490,6 +490,77 @@ return res.json({
 
     }
 });  
+*/
+app.get("/api/stocks/recommendation", async (req, res) => {
+  try {
+    const token = await getStoredToken();
+    if (!token?.access_token) {
+      return res.status(401).json({
+        success: false,
+        code: "KITE_SESSION_EXPIRED",
+        message: "Connect Kite first.",
+        loginUrl: "/kite/login"
+      });
+    }
+
+    const items = await getInstruments();
+    const candidates = items.filter(
+      (item) => item.symbol && !item.symbol.includes("-")
+    );
+
+    if (!candidates.length) {
+      return res.status(404).json({
+        success: false,
+        message: "No NSE instruments are available."
+      });
+    }
+
+    const selected = candidates[Math.floor(Math.random() * candidates.length)];
+    const score = 65 + Math.floor(Math.random() * 30);
+
+    return res.json({
+      success: true,
+      stock: {
+        symbol: selected.symbol,
+        name: selected.name || selected.symbol,
+        exchange: "NSE",
+        price: 0,
+        score,
+        risk: score >= 85 ? "Low" : score >= 75 ? "Medium" : "High",
+        reason: "Selected from the currently available NSE instrument list.",
+        instrumentToken: selected.instrumentToken
+}
+    });
+  }
+    catch (error) {
+    if (error instanceof KiteTokenError) {
+      try {
+        await deleteKiteToken();
+      } catch (_) {
+        /* best effort */
+      }
+      return res.status(401).json({
+        success: false,
+        code: "KITE_SESSION_EXPIRED",
+        message: "Your Kite session expired. Log in again.",
+        loginUrl: "/kite/login"
+      });
+    }
+    console.error("NSE recommendation error:", error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+});
+app.get("/api/market/quote", async (req, res) => {
+  try {
+    const symbol = String(req.query.symbol || "").trim().toUpperCase();
+    if (!symbol) {
+      return res.status(400).json({
+        success: false,
+        message: "Use ?symbol=RELIANCE"
+      });
+    }
+    
+
 
 app.get("/api/market/quote", async (req, res) => {
   try {
