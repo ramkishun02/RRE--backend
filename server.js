@@ -446,27 +446,45 @@ app.get("/api/stocks/recommendation", async (req, res) => {
     }
 
     const selected = candidates[Math.floor(Math.random() * candidates.length)];
-    const score = 65 + Math.floor(Math.random() * 30);
 
-    return res.json({
-      success: true,
-      stock: {
-        symbol: selected.symbol,
-        name: selected.name || selected.symbol,
-        exchange: "NSE",
-        price: 0,
-        score,
-        risk: score >= 85 ? "Low" : score >= 75 ? "Medium" : "High",
-        reason: "Selected from the currently available NSE instrument list.",
-        instrumentToken: selected.instrumentToken
-      }
-    });
-  } catch (error) {
-    console.error("NSE recommendation error:", error);
-    return res.status(500).json({
-      success: false,
-      message: error.message
-    });
+const instrument = `NSE:${selected.symbol}`;
+
+const quoteResponse = await fetch(
+  "https://api.kite.trade/quote/ltp" +
+    `?i=${encodeURIComponent(instrument)}`,
+  {
+    headers: {
+      "X-Kite-Version": "3",
+      Authorization: `token ${KITE_API_KEY}:${token.access_token}`
+    }
+  }
+);
+
+const quoteResult = await quoteResponse.json();
+
+if (!quoteResponse.ok || quoteResult.status !== "success") {
+  throw new Error(quoteResult.message || "Unable to get Kite price.");
+}
+
+const quote = quoteResult.data?.[instrument];
+
+if (!quote) {
+  throw new Error(`Price not found for ${instrument}.`);
+}
+
+const score = 65 + Math.floor(Math.random() * 30);
+
+return res.json({
+  success: true,
+  stock: {
+    symbol: selected.symbol,
+    name: selected.name || selected.symbol,
+    exchange: "NSE",
+    price: quote.last_price,
+    score,
+    risk: score >= 85 ? "Low" : score >= 75 ? "Medium" : "High",
+    reason: "Selected from NSE instruments and priced using live Kite market data.",
+    instrumentToken: selected.instrumentToken
   }
 });
 
