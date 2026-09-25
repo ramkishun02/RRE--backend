@@ -420,7 +420,7 @@ app.get("/api/stocks/search", async (req, res) => {
   }
 });
 
-/*app.get("/api/stocks/recommendation", async (req, res) => {
+app.get("/api/stocks/recommendation", async (req, res) => {
   try {
     const token = await getKiteToken();
     if (!token?.access_token) {
@@ -490,8 +490,8 @@ return res.json({
 
     }
 });  
-*/
-app.get("/api/stocks/recommendation", async (req, res) => {
+
+/*app.get("/api/stocks/recommendation", async (req, res) => {
   try {
     const token = await getStoredToken();
     if (!token?.access_token) {
@@ -538,7 +538,7 @@ app.get("/api/stocks/recommendation", async (req, res) => {
         await deleteKiteToken();
       } catch (_) {
         /* best effort */
-      }
+      }*/
       return res.status(401).json({
         success: false,
         code: "KITE_SESSION_EXPIRED",
