@@ -488,7 +488,7 @@ return res.json({
   }
 });
 
-    }
+    
 });  
 
 /*app.get("/api/stocks/recommendation", async (req, res) => {
