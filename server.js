@@ -488,7 +488,7 @@ return res.json({
   }
 });
 
-    
+  }   
 });  
 
 /*app.get("/api/stocks/recommendation", async (req, res) => {
@@ -537,8 +537,8 @@ return res.json({
       try {
         await deleteKiteToken();
       } catch (_) {
-        /* best effort */
-      }*/
+        
+      }
       return res.status(401).json({
         success: false,
         code: "KITE_SESSION_EXPIRED",
@@ -549,7 +549,8 @@ return res.json({
     console.error("NSE recommendation error:", error);
     return res.status(500).json({ success: false, message: error.message });
   }
-});
+});*/
+
 app.get("/api/market/quote", async (req, res) => {
   try {
     const symbol = String(req.query.symbol || "").trim().toUpperCase();
