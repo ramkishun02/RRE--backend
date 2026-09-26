@@ -473,23 +473,30 @@ if (!quote) {
 }
 
 const score = 65 + Math.floor(Math.random() * 30);
+    return res.json({
+      success: true,
+      stock: {
+        symbol: selected.symbol,
+        name: selected.name || selected.symbol,
+        exchange: "NSE",
+        price: quote.last_price,
+        score,
+        risk: score >= 85 ? "Low" : score >= 75 ? "Medium" : "High",
+        reason: "Selected from NSE instruments and priced using live Kite market data.",
+        instrumentToken: selected.instrumentToken
+      }
+    });
 
-return res.json({
-  success: true,
-  stock: {
-    symbol: selected.symbol,
-    name: selected.name || selected.symbol,
-    exchange: "NSE",
-    price: quote.last_price,
-    score,
-    risk: score >= 85 ? "Low" : score >= 75 ? "Medium" : "High",
-    reason: "Selected from NSE instruments and priced using live Kite market data.",
-    instrumentToken: selected.instrumentToken
-  }
-});
-
+  } catch (error) {
+    console.error("Error fetching stock recommendation:", error);
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Internal server error"
+    });
   }   
 });  
+
+
 
 /*app.get("/api/stocks/recommendation", async (req, res) => {
   try {
