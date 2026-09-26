@@ -702,7 +702,7 @@ market_protection
   );
     }
    String(Number.isFinite(Number(market_protection)) ? Number(market_protection) : 2)
-  ;
+  
   
     const response = await fetch("https://api.kite.trade/orders/regular", {
       method: "POST",
